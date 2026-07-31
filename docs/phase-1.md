@@ -1,6 +1,6 @@
 # Phase 1 — Repository setup
 
-**Status: complete and verified.**
+**Status: complete and verified.** Superseded by [phase-2.md](phase-2.md).
 
 ## Objective
 
@@ -115,10 +115,10 @@ It says **nothing** about forecasting quality. No model exists.
 2. **Registry vs. Hydra `_target_`.** The registry is chosen for swappable research
    components; `_target_` remains available for one-off objects like optimisers. If
    Phase 4 finds the split confusing, consolidate then — not now.
-3. **mypy runs at `python_version = "3.12"`, not the 3.10 floor.** numpy's bundled stubs
-   use `type` statements that only parse under 3.12+. Ruff's `target-version = "py310"`
+3. **mypy runs at `python_version = "3.12"`, not the 3.11 floor.** numpy's bundled stubs
+   use `type` statements that only parse under 3.12+. Ruff's `target-version = "py311"`
    enforces the language floor instead. If numpy's stubs change, revisit.
-4. **No CI matrix across Python versions yet.** `.github/workflows/ci.yml` tests 3.10 and
+4. **No CI matrix across Python versions yet.** `.github/workflows/ci.yml` tests 3.11 and
    3.13. Add intermediate versions only if a failure appears.
 
 ## Next: Phase 2

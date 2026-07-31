@@ -50,11 +50,51 @@ def test_composition_validates_against_the_dataclass(compose_config):
     assert typed.logging.wandb.enabled is False
 
 
-def test_phase_placeholders_are_present_but_empty(compose_config):
+def test_data_group_composes_by_default(compose_config):
+    """Phase 2: `data` is now a real group, defaulting to the synthetic dataset."""
     cfg = compose_config()
-    assert cfg.data is None
+    assert cfg.data is not None
+    assert cfg.data.name == "synthetic"
+    assert cfg.data.history_length == 4
+
+
+def test_remaining_phase_placeholders_are_empty(compose_config):
+    """`model` and `training` stay untyped until Phases 3 and 4 define them."""
+    cfg = compose_config()
     assert cfg.model is None
     assert cfg.training is None
+
+
+def test_data_group_is_typed_and_validated(compose_config):
+    typed = to_dataclass(compose_config())
+    assert typed.data is not None
+    assert typed.data.loader.batch_size == 4
+    assert typed.data.synthetic.n_cubes == 6
+
+
+def test_real_dataset_group_composes(compose_config):
+    cfg = compose_config(["data=earthnet2021"])
+    assert cfg.data.name == "earthnet2021"
+    assert cfg.data.min_valid_fraction > 0
+
+
+def test_data_overrides_apply(compose_config):
+    cfg = compose_config(["data.history_length=8", "data.horizon=4"])
+    assert cfg.data.history_length == 8
+    assert cfg.data.horizon == 4
+
+
+def test_data_group_rejects_a_wrong_type(compose_config):
+    with pytest.raises(ConfigCompositionException, match=re.escape("data.history_length")):
+        compose_config(["data.history_length=many"])
+
+
+def test_data_smoke_experiment_composes(compose_config):
+    cfg = compose_config(["+experiment=data_smoke"])
+    assert cfg.run.group == "smoke"
+    assert cfg.run.name == "phase2"
+    assert cfg.data.name == "synthetic"
+    assert cfg.data.loader.batch_size == 4
 
 
 def test_overrides_apply(compose_config):

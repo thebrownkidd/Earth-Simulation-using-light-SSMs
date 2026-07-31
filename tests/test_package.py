@@ -18,8 +18,22 @@ SUBPACKAGES = [
     "tinyearth.cli",
     "tinyearth.cli.info",
     "tinyearth.cli.inspect_config",
+    "tinyearth.cli.inspect_data",
     "tinyearth.config",
+    "tinyearth.config.resolution",
+    "tinyearth.config.schema",
+    "tinyearth.config.store",
     "tinyearth.datasets",
+    "tinyearth.datasets.earthnet2021",
+    "tinyearth.datasets.factory",
+    "tinyearth.datasets.loaders",
+    "tinyearth.datasets.masking",
+    "tinyearth.datasets.minicube",
+    "tinyearth.datasets.normalization",
+    "tinyearth.datasets.splits",
+    "tinyearth.datasets.synthetic",
+    "tinyearth.datasets.types",
+    "tinyearth.datasets.windows",
     "tinyearth.evaluation",
     "tinyearth.models",
     "tinyearth.models.decoders",
@@ -28,6 +42,11 @@ SUBPACKAGES = [
     "tinyearth.models.temporal",
     "tinyearth.training",
     "tinyearth.utils",
+    "tinyearth.utils.device",
+    "tinyearth.utils.logging",
+    "tinyearth.utils.paths",
+    "tinyearth.utils.registry",
+    "tinyearth.utils.seed",
 ]
 
 
@@ -65,6 +84,20 @@ def test_config_reexports_resolve():
 
     for name in config.__all__:
         assert hasattr(config, name)
+
+
+def test_datasets_reexports_resolve():
+    import tinyearth.datasets as datasets
+
+    for name in datasets.__all__:
+        assert hasattr(datasets, name)
+
+
+def test_registered_datasets_are_discoverable():
+    """Configs select datasets by name, so the registry must be populated."""
+    from tinyearth.datasets import DATASETS
+
+    assert set(DATASETS.keys()) == {"earthnet2021", "synthetic"}
 
 
 def test_info_report_renders():

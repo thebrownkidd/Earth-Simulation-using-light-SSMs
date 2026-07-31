@@ -88,6 +88,63 @@ def test_dry_run_writes_absolutely_nothing(tmp_path: Path):
     assert not outputs.exists()
 
 
+def test_data_command_succeeds(tmp_path: Path):
+    result = _run(
+        "tinyearth.cli.inspect_data",
+        "logging.rich=false",
+        f"paths.outputs={tmp_path.as_posix()}",
+        f"paths.cache={(tmp_path / 'cache').as_posix()}",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "data pipeline OK" in result.stdout + result.stderr
+
+
+def test_data_smoke_experiment_reports_shapes(tmp_path: Path):
+    result = _run(
+        "tinyearth.cli.inspect_data",
+        "+experiment=data_smoke",
+        "logging.rich=false",
+        f"paths.outputs={tmp_path.as_posix()}",
+        f"paths.cache={(tmp_path / 'cache').as_posix()}",
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "images=(4, 4, 4, 16, 16)" in output
+    assert "target=(4, 1, 4, 16, 16)" in output
+    assert "same seed -> same batch True" in output
+    assert "train/val overlap  0" in output
+
+
+def test_data_command_respects_horizon_override(tmp_path: Path):
+    result = _run(
+        "tinyearth.cli.inspect_data",
+        "logging.rich=false",
+        "data.history_length=6",
+        "data.horizon=4",
+        f"paths.outputs={tmp_path.as_posix()}",
+        f"paths.cache={(tmp_path / 'cache').as_posix()}",
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "6 -> 4" in output
+
+
+def test_missing_real_dataset_gives_download_instructions(tmp_path: Path):
+    """The most common setup failure must be actionable, not a bare traceback."""
+    result = _run(
+        "tinyearth.cli.inspect_data",
+        "data=earthnet2021",
+        "logging.rich=false",
+        f"paths.data={(tmp_path / 'absent').as_posix()}",
+        f"paths.outputs={tmp_path.as_posix()}",
+        f"paths.cache={(tmp_path / 'cache').as_posix()}",
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "download_earthnet2021" in output
+    assert "does not redistribute" in output
+
+
 def test_invalid_override_fails_loudly():
     result = _run("tinyearth.cli.inspect_config", "--dry-run", "seed.value=not-an-int")
     assert result.returncode != 0

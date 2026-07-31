@@ -7,7 +7,7 @@ name = "tinyearth"
 version = "0.1.0"
 description = "How small can a State Space Model become while remaining competitive at Earth observation forecasting?"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "Arpit Goel" }]
 keywords = ["state-space-models", "earth-observation", "forecasting", "efficiency"]
@@ -15,7 +15,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -42,11 +41,24 @@ dev = [
     "pre-commit>=3.7",
 ]
 wandb = ["wandb>=0.17"]
-notebooks = ["jupyterlab>=4.0", "matplotlib>=3.8", "ipywidgets>=8.1"]
+notebooks = [
+    "jupyterlab>=4.0",
+    "matplotlib>=3.8",
+    "ipywidgets>=8.1",
+    # nbclient + ipykernel let tests/test_notebooks.py execute the notebooks,
+    # so an example that stops working fails the suite rather than rotting.
+    "nbclient>=0.10",
+    "nbformat>=5.10",
+    "ipykernel>=6.29",
+]
+# The official EarthNet2021 downloader. Optional: the dataset can also be
+# fetched by hand, and the synthetic dataset needs nothing at all.
+data = ["earthnet>=0.3.9"]
 
 [project.scripts]
 tinyearth-info = "tinyearth.cli.info:main"
 tinyearth-config = "tinyearth.cli.inspect_config:main"
+tinyearth-data = "tinyearth.cli.inspect_data:main"
 
 [project.urls]
 Repository = "https://github.com/ArpitGoel/Earth-Simulation-using-light-SSMs"
@@ -63,11 +75,11 @@ tinyearth = ["py.typed"]
 # ---------------------------------------------------------------------------
 [tool.black]
 line-length = 100
-target-version = ["py310"]
+target-version = ["py311"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
@@ -100,8 +112,12 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Test functions are self-describing and their signatures are fixture-driven.
-"tests/**" = ["D100", "D103", "ANN", "SLF001"]
+# Test names are the documentation; grouping classes carry no separate meaning.
+# Signatures are fixture-driven, so annotations add noise without catching defects.
+"tests/**" = ["D100", "D101", "D102", "D103", "D104", "D106", "ANN", "SLF001"]
+# Scripts are user-facing commands: printing is the point, and argparse handles
+# the interface, so a module docstring is the only documentation that matters.
+"scripts/**" = ["T20", "D103"]
 "notebooks/**" = ["D", "ANN", "T20"]
 
 [tool.ruff.lint.pydocstyle]
@@ -114,10 +130,10 @@ known-first-party = ["tinyearth"]
 # Type checking
 # ---------------------------------------------------------------------------
 [tool.mypy]
-# Not 3.10, despite `requires-python`: numpy ships stubs using `type` statements
+# Not 3.11, despite `requires-python`: numpy ships stubs using `type` statements
 # that only parse under 3.12+, and mypy applies `python_version` to dependency
-# stubs as well as to our own code. The 3.10 language floor is instead enforced
-# by ruff's `target-version = "py310"` (pyupgrade rules), and by the CI matrix.
+# stubs as well as to our own code. The 3.11 language floor is instead enforced
+# by ruff's `target-version = "py311"` (pyupgrade rules), and by the CI matrix.
 python_version = "3.12"
 files = ["src", "tests"]
 strict = true

@@ -4,11 +4,14 @@
 # that every group loaded afterwards is validated against it; `_self_` comes
 # last so that values written in *this* file win over the groups.
 #
-# Phase 1 status: the `data`, `model` and `training` groups are intentionally
-# absent. Phases 2-4 add them to the defaults list below.
+# Phase 2 status: `data` defaults to the synthetic dataset so that every
+# command runs out of the box without the ~100 GB EarthNet2021 download.
+# Select the real data with `data=earthnet2021`. The `model` and `training`
+# groups are still absent; Phases 3-4 add them below.
 
 defaults:
   - tinyearth_schema
+  - data: synthetic
   - _self_
   - override hydra/job_logging: disabled
   - override hydra/hydra_logging: disabled
