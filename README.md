@@ -1,220 +1,209 @@
 # TinyEarth
 
-**How small can a State Space Model become while remaining competitive at Earth observation
-forecasting?**
+**A controlled benchmark for measuring how small a State Space Model can get before it stops
+forecasting the Earth's surface competitively.**
 
-TinyEarth is a research codebase built to answer one question carefully. The objective is
-**efficiency, not state-of-the-art accuracy** — and the infrastructure is designed so that
-every efficiency claim comes with the hardware, the configuration, and the caveats attached.
+Four temporal architectures — a diagonal SSM, a selective SSM, a ConvLSTM and a temporal
+transformer — swappable by a single config flag, compared at **matched parameter budgets**,
+with quality and efficiency measured together on every run.
 
 ```
-image encoder  ->  temporal backbone  ->  decoder  ->  forecast
-                   ^^^^^^^^^^^^^^^^^
-                   the only thing that varies
+image encoder  ─→  temporal backbone  ─→  decoder  ─→  forecast
+                   ▲
+                   the only thing that changes between experiments
 ```
 
-Swapping the backbone is a single config override, and the encoder and decoder keep
-byte-identical parameter counts across the swap — which is what makes any difference in
-results *attributable*. That invariant is enforced by tests, not by convention.
-
----
-
-## Status
-
-| Phase | Scope | State |
-| --- | --- | --- |
-| **1** | Repository scaffold, config system, tooling, utilities | **Complete** |
-| **2** | EarthNet2021 dataset pipeline | **Complete** |
-| **3** | ConvLSTM and temporal-transformer baselines, training, metrics | **Complete** |
-| **4** | State Space Models, size tiers, experiment sweeps | **Complete** |
-
-**The infrastructure is finished. The experiments have not been run.**
-
-No model has been trained to convergence on real EarthNet2021 data, so **this repository
-contains no forecast-quality result**. Every quality number here was produced on synthetic
-data over a handful of optimiser steps and is meaningless as science. What *is* established
-is cost: parameter counts, FLOPs and latency at matched budgets, measured and reproducible.
-
-See [`docs/project-log.md`](docs/project-log.md) for the full development history and honest
-limits.
-
----
-
-## Quick start
-
-Requires Python 3.11+. **No dataset download needed** — the default data is synthetic.
+The encoder and decoder keep **byte-identical parameter counts** across every backbone
+swap. That invariant is what makes a difference in results attributable to the architecture
+rather than to accidental capacity — and it is enforced by tests, not by convention.
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
-
-tinyearth-train +experiment=ssm_smoke      # trains an SSM end to end, in seconds
+tinyearth-train +experiment=ssm_smoke     # trains end to end in seconds, no dataset needed
 ```
-
-That single command exercises the whole stack: config composition, data generation, model
-assembly, a masked loss, the training loop, five forecast metrics, five efficiency metrics,
-checkpointing and metric tracking.
 
 ---
 
-## Installation
+## What's actually in here
 
-```bash
-pip install -e ".[dev]"                            # core + quality tooling
-pip install -e ".[dev,notebooks]"                  # + JupyterLab, matplotlib
-pip install -e ".[dev,wandb]"                      # + Weights & Biases
-pip install -e ".[dev,data]"                       # + EarthNet2021 downloader
+| | |
+| --- | --- |
+| **4 temporal backbones** | `s4d`, `mamba`, `convlstm`, `transformer` — one interface, one config flag |
+| **Full data pipeline** | EarthNet2021 reader, temporal windowing, cloud masking, deterministic splits, caching |
+| **Training stack** | Trainer, optimiser/schedule construction, checkpointing, TensorBoard + JSONL + optional W&B |
+| **10 metrics** | MAE, RMSE, PSNR, SSIM, SAM (all mask-aware) + parameters, FLOPs, peak memory, latency, throughput |
+| **5 experiment sweeps** | scaling, history length, forecast horizon, hidden dimension, state dimension |
+| **Calibrated size tiers** | ~2M / ~5M / ~10M / ~20M, measured per architecture |
+| **809 tests** | strict mypy, ruff, black, CI on Linux + Windows |
+| **Zero-download demo** | Synthetic data in the real on-disk format — everything runs without the 100 GB dataset |
 
-# CPU-only PyTorch
-pip install -e ".[dev]" --extra-index-url https://download.pytorch.org/whl/cpu
+---
+
+## Three things that make it a *benchmark* rather than a model zoo
+
+### 1. The comparison is controlled, and the control is tested
+
+Adding a backbone changes nothing else. The interface is:
+
+```python
+encoder:  [B, T, C, H, W] → [B, T, D, h, w]
+backbone: [B, T, D, h, w] → [B, K, D, h, w]     # the component under study
+decoder:  [B, K, D, h, w] → [B, K, C, H, W]
 ```
 
-### Verify
+Encoder and decoder hold **no temporal parameters at all** — frames are folded into the
+batch dimension, so every unit of sequence-modelling capacity belongs to the backbone.
+`test_frames_are_encoded_independently` pins this down by reversing frame order and
+requiring the output reverse exactly.
+
+### 2. Efficiency is a first-class result, not a footnote
+
+Every run reports parameters, FLOPs, peak memory, latency and throughput **by default** —
+no flag to remember. Timing handles CUDA's asynchrony and warmup properly, and reports a
+median rather than a mean.
+
+The efficiency numbers are why the project exists, so they can't be optional.
+
+### 3. Correctness is verified against references, not against convergence
+
+The S4D kernel is checked against a literal step-by-step recurrence to **1e-7**:
+
+```
+x_k = Ā·x_{k-1} + B̄·u_k    ←→    FFT convolution with K_k = C·Ā^k·B̄
+```
+
+This matters more than it sounds. An SSM with a subtly wrong kernel still trains, still
+shows a falling loss, and still produces publishable-looking numbers. Metrics get the same
+treatment — every one is tested against a closed-form value, not a plausible-looking one.
+
+---
+
+## A result the benchmark already produced
+
+Measured at matched parameter budgets, 64×64 input, `T=4 → K=2`, CPU:
+
+| At the 2M tier | `hidden_dim` | GFLOPs/sample | Latency |
+| --- | ---: | ---: | ---: |
+| `transformer` | 128 | **2.1** | **76 ms** |
+| `convlstm` | 80 | 7.2 | 76 ms |
+| `s4d` | 272 | 5.8 | 104 ms |
+| `mamba` | 256 | 6.5 | 610 ms |
+
+**Parameter efficiency is not FLOP efficiency.**
+
+A diagonal SSM's temporal mixing costs `~4HN` parameters against attention's `~4H²`, so at
+the same budget it affords 2.1× the width. But FLOPs scale with *width squared* in the
+channel-mixing layers every architecture shares — so the SSM spends its parameter saving on
+width and pays for that width in compute. The transformer is cheapest on both counts, at
+every tier.
+
+"How small can an SSM be?" turns out to have two different answers depending on whether
+*small* means parameters or compute, and here they disagree. That is why this codebase
+reports both by default.
+
+> **Caveat worth stating loudly:** the usual asymptotic argument for SSMs — `O(T)` versus
+> attention's `O(T²)` — does not apply here. This project's sequences top out at `T=8`,
+> where that is 8 operations against 64. Earth observation minicubes are short by nature,
+> which may simply make this an unfavourable setting for the architecture. Finding that out
+> is a legitimate result.
+
+---
+
+## Honest status
+
+**The platform is complete. The experiments have not been run.**
+
+No model has been trained to convergence on real EarthNet2021 data, so **there is no
+forecast-quality result in this repository**. Every quality number here came from synthetic
+data over a handful of optimiser steps and is meaningless as science.
+
+What *is* established and reproducible: the cost side — parameter counts, FLOPs and latency
+at matched budgets — and that the whole stack is correct.
+
+To produce real results you need the ~100 GB download and a GPU:
+
+```bash
+pip install -e ".[data]"
+python scripts/download_earthnet2021.py --root data/earthnet2021
+
+tinyearth-train --multirun +experiment=scaling data=earthnet2021 \
+    model=s4d,mamba,convlstm,transformer \
+    model.backbone.size=tiny,small,base,large
+
+python scripts/collate_results.py --group scaling
+```
+
+Also outstanding: the frozen foundation-encoder comparison, GPU verification of mixed
+precision and peak-memory measurement, and validating the EarthNet2021 format constants
+against a real download rather than against documentation.
+
+---
+
+## The backbones
+
+| Key | Architecture | Mixes over time by | Parallel in time | Autoregressive |
+| --- | --- | --- | --- | --- |
+| `s4d` | Diagonal SSM (Gu et al., 2022) | FFT convolution | ✅ | No |
+| `mamba` | Selective SSM (Gu & Dao, 2023) | Input-dependent scan | ❌ | No |
+| `convlstm` | ConvLSTM (Shi et al., 2015) | Gated recurrence | ❌ | **Yes** |
+| `transformer` | Temporal transformer | Attention over `T` | ✅ | No |
+
+`convlstm` is the only autoregressive one — worth stating whenever latency is compared,
+since that difference is not about the mixing mechanism.
+
+**Adding a fifth backbone:** subclass `TemporalBackbone`, register it, add a config, run
+`scripts/calibrate_sizes.py`, add the name to one list in the tests. The parametrised
+interface suite then applies to it automatically. Nothing else changes.
+
+---
+
+## Quick reference
 
 ```bash
 tinyearth-info                              # environment and hardware report
 tinyearth-config +experiment=smoke          # compose and validate a config
-tinyearth-data   +experiment=data_smoke     # build the data pipeline and report
+tinyearth-data   +experiment=data_smoke     # build the data pipeline and report on it
 tinyearth-train  +experiment=ssm_smoke      # train end to end
-tinyearth-model  --compare                  # model size and cost, without training
+tinyearth-model  --compare                  # size and cost of every backbone, no training
 
 pytest                                      # 809 tests, ~3 min
 pytest -m "not slow"                        # 784 tests, ~28 s
 ```
 
----
-
-## The four backbones
-
-| Key | Architecture | Mixes over time by | Autoregressive |
-| --- | --- | --- | --- |
-| `s4d` | Diagonal SSM (Gu et al., 2022) | FFT convolution — parallel in time | No |
-| `mamba` | Selective SSM (Gu and Dao, 2023) | Input-dependent scan — sequential | No |
-| `convlstm` | ConvLSTM (Shi et al., 2015) | Gated recurrence — sequential | **Yes** |
-| `transformer` | Temporal transformer | Attention over `T` — parallel | No |
-
-```bash
-tinyearth-train model=s4d
-tinyearth-train model=mamba
-tinyearth-train model=convlstm
-tinyearth-train model=transformer
-```
-
-All four are available at four calibrated size tiers — `tiny` ~2M, `small` ~5M, `base` ~10M,
-`large` ~20M — so comparisons happen at **matched parameter budgets**:
-
-```bash
-tinyearth-train model=s4d model.backbone.size=base
-```
-
----
-
-## What the cost measurements already show
-
-Measured at matched budgets, 64×64 input, `T=4 → K=2`, CPU. Full table in
-[`docs/phase-4.md`](docs/phase-4.md).
-
-| At the 2M tier | `hidden_dim` | GFLOPs/sample | Latency |
-| --- | ---: | ---: | ---: |
-| `transformer` | 128 | 2.1 | 76 ms |
-| `convlstm` | 80 | 7.2 | 76 ms |
-| `s4d` | 272 | 5.8 | 104 ms |
-| `mamba` | 256 | 6.5 | 610 ms |
-
-**Parameter efficiency is not FLOP efficiency.** The SSM's cheap temporal mixing lets it
-afford 2.1× the transformer's width at the same parameter budget — but FLOPs scale with
-width squared in the channel-mixing layers every architecture shares. The SSM spends its
-parameter saving on width, and pays for that width in compute.
-
-So *"how small can an SSM be?"* has two different answers depending on whether "small" means
-parameters or compute, and here they disagree. This repository reports both by default,
-because a result quoting only parameter counts would be telling half the story.
-
-**A caveat that matters more than it looks:** the asymptotic argument for SSMs — `O(T)`
-against attention's `O(T²)` — does not apply at these sequence lengths. The history sweep
-tops out at `T=8`, where that is 8 operations against 64. TinyEarth's sequences are short by
-nature, which may simply make this an unfavourable setting for the architecture. That is
-worth finding out, and it is what the sweeps are for.
-
----
-
-## Running experiments
-
-Every experiment is reproducible from a single Hydra config.
-
-```bash
-# Scaling: four backbones x four budgets
-tinyearth-train --multirun +experiment=scaling \
-    model=s4d,mamba,convlstm,transformer \
-    model.backbone.size=tiny,small,base,large
-
-# How much context the forecast needs
-tinyearth-train --multirun +experiment=history_length data.history_length=2,4,6,8
-
-# How quality decays with forecast distance
-tinyearth-train --multirun +experiment=horizon data.horizon=1,2,4,8
-
-# Width scaling within one architecture
-tinyearth-train --multirun +experiment=hidden_dim \
-    model.backbone.kwargs.hidden_dim=64,128,256,512
-
-# The SSM-specific axis: state size is the CHEAP capacity knob
-tinyearth-train --multirun +experiment=state_dim \
-    model.backbone.kwargs.state_dim=8,16,32,64,128
-
-# Collate any sweep into a table
-python scripts/collate_results.py --group scaling
-```
-
-Each run writes to `outputs/<group>/<name>/`:
+Every run writes to `outputs/<group>/<name>/`:
 
 ```
-summary.json          # flat headline numbers — scriptable across a sweep
-metrics.jsonl         # per-step and per-epoch history
-resolved_config.yaml  # the reproducibility record
-run.log               # full DEBUG log
-best.ckpt, last.ckpt  # weights, optimiser state, RNG state, config
+summary.json          flat headline numbers — scriptable across a sweep
+metrics.jsonl         per-step and per-epoch history
+resolved_config.yaml  the reproducibility record
+run.log               full DEBUG log
+best.ckpt last.ckpt   weights, optimiser state, RNG state, config
 tensorboard/
 ```
 
-Every experiment config documents four things in its header: **objective, configuration,
-expected output, interpretation** — including what the result does *not* show.
-
 ---
 
-## Repository layout
+## Layout
 
 ```
-configs/                 Hydra configuration tree
-├── config.yaml          root config; composes the structured schema
-├── data/                synthetic (default) and earthnet2021
-├── model/               s4d, mamba, convlstm, transformer
-├── training/            optimiser, schedule, checkpointing, metrics
-└── experiment/          complete named experiments and sweeps
-
+configs/                 Hydra tree: data / model / training / experiment
 src/tinyearth/
-├── bootstrap.py         shared run initialisation for every entry point
-├── config/              structured schemas, ConfigStore, resolution
-├── datasets/            EarthNet2021 pipeline, windowing, masking, splits
 ├── models/
 │   ├── base.py          Encoder / TemporalBackbone / Decoder interfaces
-│   ├── sizes.py         calibrated parameter tiers
+│   ├── temporal/        ◀── THE COMPONENT UNDER STUDY
 │   ├── encoders/        CNN encoder (held fixed)
-│   ├── temporal/        THE COMPONENT UNDER STUDY
 │   ├── decoders/        CNN decoder (held fixed)
-│   └── losses/          L1, L2, Charbonnier; registry-backed
-├── training/            trainer, optimiser, schedules, metric tracking
+│   ├── losses/          L1, L2, Charbonnier — registry-backed
+│   └── sizes.py         calibrated parameter tiers
+├── datasets/            EarthNet2021 pipeline, windowing, masking, splits
+├── training/            trainer, optimisation, metric tracking
 ├── evaluation/          forecast-quality and efficiency metrics
-├── utils/               determinism, logging, devices, paths, registry
-└── cli/                 console entry points
-
+├── config/  utils/  cli/
 docs/  tests/  scripts/  experiments/  notebooks/
 ```
 
-`configs/` sits **outside** the installable package on purpose: research configs are the
-experiment record and are edited constantly, so burying them in a wheel is wrong. See
-[`docs/project-structure.md`](docs/project-structure.md).
+`configs/` sits outside the installable package deliberately — research configs are the
+experiment record and are edited constantly, so burying them in a wheel is wrong.
 
 ---
 
@@ -222,65 +211,46 @@ experiment record and are edited constantly, so burying them in a wheel is wrong
 
 | Document | Contents |
 | --- | --- |
-| [`docs/project-log.md`](docs/project-log.md) | **Development history, decisions, and what went wrong** |
-| [`docs/project-structure.md`](docs/project-structure.md) | Layout and the reasoning behind it |
-| [`docs/configuration.md`](docs/configuration.md) | How the Hydra config system works |
-| [`docs/datasets.md`](docs/datasets.md) | Dataset format, splits, masking, normalisation |
+| [`docs/project-log.md`](docs/project-log.md) | **Development history, decisions, and every bug found** |
 | [`docs/models.md`](docs/models.md) | Architecture, backbones, measured parameter counts |
 | [`docs/evaluation.md`](docs/evaluation.md) | Metrics and how they are measured |
+| [`docs/datasets.md`](docs/datasets.md) | Dataset format, splits, masking, normalisation |
 | [`docs/reproducibility.md`](docs/reproducibility.md) | Seeding, determinism, and its cost |
+| [`docs/configuration.md`](docs/configuration.md) | How the Hydra config system works |
+| [`docs/project-structure.md`](docs/project-structure.md) | Layout and the reasoning behind it |
 | [`docs/phase-1.md`](docs/phase-1.md) … [`phase-4.md`](docs/phase-4.md) | Per-phase deliverables and verification |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Development workflow and coding standards |
 
 ---
 
-## Development
-
-Four gates. All four must pass before anything is merged.
+## Engineering
 
 ```bash
 black src tests scripts        # format (black is the only formatter)
-ruff check src tests scripts   # lint
-mypy                           # type check (strict)
-pytest                         # test
-pre-commit install             # run all of the above on commit
+ruff check src tests scripts   # lint, 17 rule families
+mypy                           # strict, 80 source files clean
+pytest                         # 809 tests
+pre-commit install
 ```
 
-### Adding a backbone
-
-1. Subclass `TemporalBackbone`, implementing
-   `forward(latents: [B,T,D,h,w], horizon: int) -> [B,K,D,h,w]`.
-2. Decorate with `@TEMPORAL_BACKBONES.register("name")`.
-3. Add `configs/model/name.yaml`.
-4. Run `python scripts/calibrate_sizes.py` and add a row to `SIZE_TIERS`.
-5. Add the name to `BACKBONE_NAMES` in `tests/test_models.py`.
-
-The parametrised interface suite then applies automatically. Nothing else changes — that is
-the design working.
+Two conventions in the data pipeline are load-bearing and easy to get wrong, so both are
+tested aggressively: **`cldmsk == 1` means cloudy** (inverting it trains the model
+exclusively on cloud, and the loss still falls), and normalisation statistics must come from
+the training split only.
 
 ---
 
 ## Datasets
 
-TinyEarth **does not redistribute any dataset**. `data/` is git-ignored.
+TinyEarth **does not redistribute any dataset**. `data/` is git-ignored, and the default
+dataset is synthetic so the repository runs out of the box.
 
-You do not need EarthNet2021 to run this repository. For the real thing:
+## License
 
-```bash
-pip install -e ".[data]"
-python scripts/download_earthnet2021.py --root data/earthnet2021
-tinyearth-train data=earthnet2021 model=s4d model.backbone.size=base
-```
+MIT — see [LICENSE](LICENSE).
 
-Two conventions in [`docs/datasets.md`](docs/datasets.md) are load-bearing and easy to get
-wrong: **`cldmsk == 1` means cloudy** (inverting it trains the model exclusively on cloud,
-and losses still fall), and normalisation statistics must come from the training split only.
-
----
-
-## Citation
-
-If you use this code, please also cite the dataset and the architectures:
+<details>
+<summary>Citations</summary>
 
 ```bibtex
 @inproceedings{requena2021earthnet2021,
@@ -288,36 +258,23 @@ If you use this code, please also cite the dataset and the architectures:
                Forecasting as a Guided Video Prediction Task},
   author    = {Requena-Mesa, Christian and Benson, Vitus and Reichstein, Markus and
                Runge, Jakob and Denzler, Joachim},
-  booktitle = {CVPR Workshops},
-  year      = {2021},
+  booktitle = {CVPR Workshops}, year = {2021},
 }
-
 @inproceedings{gu2022s4d,
   title     = {On the Parameterization and Initialization of Diagonal State Space Models},
   author    = {Gu, Albert and Gupta, Ankit and Goel, Karan and R{\'e}, Christopher},
-  booktitle = {NeurIPS},
-  year      = {2022},
+  booktitle = {NeurIPS}, year = {2022},
 }
-
 @article{gu2023mamba,
   title   = {Mamba: Linear-Time Sequence Modeling with Selective State Spaces},
-  author  = {Gu, Albert and Dao, Tri},
-  journal = {arXiv:2312.00752},
-  year    = {2023},
+  author  = {Gu, Albert and Dao, Tri}, journal = {arXiv:2312.00752}, year = {2023},
 }
-
 @inproceedings{shi2015convlstm,
   title     = {Convolutional LSTM Network: A Machine Learning Approach for
                Precipitation Nowcasting},
   author    = {Shi, Xingjian and Chen, Zhourong and Wang, Hao and Yeung, Dit-Yan and
                Wong, Wai-Kin and Woo, Wang-chun},
-  booktitle = {NeurIPS},
-  year      = {2015},
+  booktitle = {NeurIPS}, year = {2015},
 }
 ```
-
----
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+</details>
