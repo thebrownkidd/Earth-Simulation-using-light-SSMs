@@ -1,6 +1,6 @@
 # Phase 2 — Dataset pipeline
 
-**Status: complete and verified.**
+**Status: complete and verified.** Superseded by [phase-3.md](phase-3.md).
 
 ## Objective
 

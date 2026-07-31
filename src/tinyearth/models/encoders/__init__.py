@@ -1,9 +1,15 @@
 """Image encoders mapping a frame to a latent grid.
 
-Held fixed across temporal-backbone experiments. A CNN encoder arrives in
-Phase 3; a frozen foundation-model encoder is a later comparison point.
+Held fixed across temporal-backbone experiments, and deliberately free of
+temporal parameters -- every bit of sequence-modelling capacity belongs to the
+backbone under study.
+
+A frozen foundation encoder is a later comparison point; the registry is what
+makes swapping one in a config change.
 """
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from tinyearth.models.encoders.cnn import ENCODERS, CNNEncoder
+
+__all__ = ["ENCODERS", "CNNEncoder"]

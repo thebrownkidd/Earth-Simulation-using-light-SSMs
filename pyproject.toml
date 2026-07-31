@@ -59,6 +59,8 @@ data = ["earthnet>=0.3.9"]
 tinyearth-info = "tinyearth.cli.info:main"
 tinyearth-config = "tinyearth.cli.inspect_config:main"
 tinyearth-data = "tinyearth.cli.inspect_data:main"
+tinyearth-train = "tinyearth.cli.train:main"
+tinyearth-model = "tinyearth.cli.inspect_model:main"
 
 [project.urls]
 Repository = "https://github.com/ArpitGoel/Earth-Simulation-using-light-SSMs"
@@ -109,6 +111,7 @@ ignore = [
     "ANN401",  # allow `Any` in the deliberate config escape hatches
     "E501",    # line length is black's job
     "COM812",  # trailing-comma rule that fights the formatter
+    "N812",    # `torch.nn.functional as F` is the universal convention
 ]
 
 [tool.ruff.lint.per-file-ignores]

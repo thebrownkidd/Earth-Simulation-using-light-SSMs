@@ -1,8 +1,11 @@
 """Decoders mapping a latent grid back to pixel space.
 
-Held fixed across temporal-backbone experiments. Introduced in Phase 3.
+Held fixed across temporal-backbone experiments, and free of temporal
+parameters.
 """
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from tinyearth.models.decoders.cnn import DECODERS, CNNDecoder
+
+__all__ = ["DECODERS", "CNNDecoder"]

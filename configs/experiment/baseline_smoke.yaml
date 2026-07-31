@@ -1,0 +1,61 @@
+# @package _global_
+#
+# Objective
+#   Verify the Phase 3 training stack end to end: model assembly, the masked
+#   loss, the training loop, forecast-quality metrics, efficiency profiling,
+#   checkpointing and metric tracking. Runs on synthetic data in seconds.
+#
+# Configuration
+#   ConvLSTM backbone at reduced width, synthetic cubes, 2 epochs x 4 steps.
+#   Swap the backbone with `model=transformer` -- nothing else changes, which
+#   is the point of the architecture.
+#
+# Expected output
+#   A parameter breakdown with the majority of parameters in the backbone; a
+#   decreasing train loss; MAE/RMSE/PSNR/SSIM/SAM for train and val; an
+#   efficiency table (parameters, GFLOPs, latency, throughput); and
+#   `summary.json`, `metrics.jsonl`, `last.ckpt` and `best.ckpt` in the run
+#   directory.
+#
+# Interpretation
+#   Success means the stack is correct and reproducible. The metric VALUES are
+#   meaningless -- the data is synthetic and the run is 8 steps long. Nothing
+#   here should be reported as a result.
+#
+# Usage
+#   tinyearth-train +experiment=baseline_smoke
+#   tinyearth-train +experiment=baseline_smoke model=transformer
+
+defaults:
+  - override /data: synthetic
+  - override /model: convlstm
+  - override /training: smoke
+
+run:
+  name: phase3
+  group: smoke
+  notes: "Phase 3 training stack verification on synthetic cubes."
+  tags: [phase3, smoke, baseline]
+
+seed:
+  value: 1234
+  deterministic: true
+
+data:
+  history_length: 4
+  horizon: 2
+  synthetic:
+    size: 32
+  loader:
+    batch_size: 4
+
+model:
+  latent_dim: 32
+  encoder:
+    base_channels: 16
+  decoder:
+    base_channels: 16
+  backbone:
+    kwargs:
+      hidden_dim: 32
+      n_layers: 1

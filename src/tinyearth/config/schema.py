@@ -5,11 +5,10 @@ so that YAML configs are **validated and type-coerced at composition time**. A
 typo in a config key, or a string where an int belongs, fails before any model
 is constructed rather than three hours into a sweep.
 
-Scope: Phases 1 and 2 own ``run``, ``seed``, ``paths``, ``logging`` and
-``data``, which are fully typed here. The ``model`` and ``training`` groups are
-typed ``Any`` on purpose -- their schemas are defined by Phases 3 and 4, and
-inventing fields now would only guarantee a rewrite. They compose normally in
-the meantime, just without static validation.
+Scope: every group is now fully typed. ``model.backbone.kwargs`` is the one
+deliberate escape hatch -- it holds backbone-specific arguments, which cannot be
+enumerated in advance without the schema having to change every time a new
+backbone is added. That would defeat the point of the registry.
 """
 
 from __future__ import annotations
@@ -18,16 +17,26 @@ from dataclasses import dataclass, field
 from typing import Any
 
 __all__ = [
+    "BackboneConfig",
+    "CheckpointConfig",
     "DataConfig",
+    "DecoderConfig",
+    "EncoderConfig",
+    "EvaluationConfig",
     "LoaderConfig",
     "LoggingConfig",
+    "LossConfig",
+    "ModelConfig",
     "NormalizationConfig",
+    "OptimizerConfig",
     "PathsConfig",
     "RunConfig",
+    "SchedulerConfig",
     "SeedConfig",
     "SyntheticConfig",
     "TensorBoardConfig",
     "TinyEarthConfig",
+    "TrainingConfig",
     "WandbConfig",
 ]
 
@@ -255,6 +264,213 @@ class DataConfig:
 
 
 @dataclass
+class EncoderConfig:
+    """Image encoder configuration.
+
+    Held fixed across temporal-backbone experiments -- changing it invalidates
+    comparisons against previously reported backbone results.
+
+    Attributes:
+        name: Registry key, e.g. ``"cnn"``.
+        base_channels: Channels after the stem, doubled per downsampling stage.
+        depth: Number of stride-2 stages; spatial reduction is ``2 ** depth``.
+        norm: ``group``, ``batch``, ``instance`` or ``none``.
+        activation: ``relu``, ``gelu``, ``silu`` or ``leaky_relu``.
+    """
+
+    name: str = "cnn"
+    base_channels: int = 32
+    depth: int = 2
+    norm: str = "group"
+    activation: str = "gelu"
+
+
+@dataclass
+class DecoderConfig:
+    """Decoder configuration.
+
+    Attributes:
+        name: Registry key, e.g. ``"cnn"``.
+        base_channels: Channel count at full resolution.
+        depth: Number of upsampling stages; must equal the encoder's depth.
+        norm: Normalisation kind.
+        activation: Hidden activation.
+        output_activation: ``sigmoid`` for reflectance in ``[0, 1]``, or
+            ``none`` for unbounded output. Must be ``none`` when
+            ``data.normalization.kind`` is ``standardize``.
+    """
+
+    name: str = "cnn"
+    base_channels: int = 32
+    depth: int = 2
+    norm: str = "group"
+    activation: str = "gelu"
+    output_activation: str = "sigmoid"
+
+
+@dataclass
+class BackboneConfig:
+    """Temporal backbone configuration -- the component under study.
+
+    Attributes:
+        name: Registry key from
+            :data:`~tinyearth.models.temporal.TEMPORAL_BACKBONES`.
+        kwargs: Backbone-specific arguments, e.g. ``hidden_dim``, ``n_layers``.
+            Deliberately untyped: enumerating them would force a schema change
+            for every new backbone, defeating the registry. Unknown keys still
+            fail loudly at construction.
+    """
+
+    name: str = "convlstm"
+    kwargs: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class LossConfig:
+    """Training objective.
+
+    Attributes:
+        terms: Registry key to weight, e.g. ``{l1: 1.0}``. Multiple entries form
+            a weighted sum; each term is logged separately.
+        kwargs: Per-loss constructor arguments, keyed by the same names.
+    """
+
+    terms: dict[str, float] = field(default_factory=lambda: {"l1": 1.0})
+    kwargs: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+@dataclass
+class ModelConfig:
+    """Full model configuration.
+
+    Attributes:
+        latent_dim: Latent channel count shared by all three components.
+        encoder: Encoder settings.
+        backbone: Temporal backbone settings.
+        decoder: Decoder settings.
+        loss: Training objective.
+    """
+
+    latent_dim: int = 128
+    encoder: EncoderConfig = field(default_factory=EncoderConfig)
+    backbone: BackboneConfig = field(default_factory=BackboneConfig)
+    decoder: DecoderConfig = field(default_factory=DecoderConfig)
+    loss: LossConfig = field(default_factory=LossConfig)
+
+
+@dataclass
+class OptimizerConfig:
+    """Optimiser settings.
+
+    Attributes:
+        name: ``adamw``, ``adam`` or ``sgd``.
+        lr: Learning rate.
+        weight_decay: Decoupled weight decay for AdamW.
+        betas: Adam beta coefficients.
+        momentum: SGD momentum; ignored by Adam variants.
+    """
+
+    name: str = "adamw"
+    lr: float = 1e-3
+    weight_decay: float = 1e-4
+    betas: tuple[float, float] = (0.9, 0.999)
+    momentum: float = 0.9
+
+
+@dataclass
+class SchedulerConfig:
+    """Learning-rate schedule.
+
+    Attributes:
+        name: ``cosine``, ``step``, ``plateau`` or ``none``.
+        warmup_epochs: Linear warmup length. Non-zero matters for the
+            transformer baseline, which is unstable without it.
+        min_lr: Floor for the cosine schedule.
+        step_size: Epochs between decays, for ``step``.
+        gamma: Decay factor for ``step``.
+        patience: Epochs without improvement before decay, for ``plateau``.
+    """
+
+    name: str = "cosine"
+    warmup_epochs: int = 0
+    min_lr: float = 1e-6
+    step_size: int = 10
+    gamma: float = 0.1
+    patience: int = 5
+
+
+@dataclass
+class CheckpointConfig:
+    """Checkpointing behaviour.
+
+    Attributes:
+        enabled: Write checkpoints at all.
+        save_last: Keep the most recent epoch, for resuming.
+        save_best: Keep the best epoch by :attr:`monitor`.
+        monitor: Validation metric to select on.
+        mode: ``min`` or ``max`` for that metric.
+    """
+
+    enabled: bool = True
+    save_last: bool = True
+    save_best: bool = True
+    monitor: str = "val/loss"
+    mode: str = "min"
+
+
+@dataclass
+class EvaluationConfig:
+    """What is measured, and when.
+
+    Attributes:
+        every_n_epochs: Validation frequency.
+        efficiency: Profile parameters, FLOPs, memory, latency and throughput at
+            the end of every run. On by default -- efficiency is this project's
+            primary result, so it should never depend on remembering a flag.
+        efficiency_warmup: Untimed passes before timing.
+        efficiency_iterations: Timed passes.
+        data_range: Peak signal value for PSNR and SSIM.
+    """
+
+    every_n_epochs: int = 1
+    efficiency: bool = True
+    efficiency_warmup: int = 3
+    efficiency_iterations: int = 10
+    data_range: float = 1.0
+
+
+@dataclass
+class TrainingConfig:
+    """Optimisation and the training loop.
+
+    Attributes:
+        epochs: Number of training epochs.
+        optimizer: Optimiser settings.
+        scheduler: Learning-rate schedule.
+        checkpoint: Checkpointing behaviour.
+        evaluation: Metric settings.
+        grad_clip: Gradient-norm clip; ``0`` disables.
+        amp: Automatic mixed precision. Ignored on non-CUDA devices.
+        log_every_n_steps: Training-metric logging frequency.
+        max_steps_per_epoch: Cap on steps per epoch, for smoke tests. ``None``
+            runs the full epoch.
+        early_stopping_patience: Epochs without improvement before stopping.
+            ``None`` disables.
+    """
+
+    epochs: int = 10
+    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
+    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+    grad_clip: float = 1.0
+    amp: bool = False
+    log_every_n_steps: int = 10
+    max_steps_per_epoch: int | None = None
+    early_stopping_patience: int | None = None
+
+
+@dataclass
 class TinyEarthConfig:
     """Root configuration object for every TinyEarth entry point.
 
@@ -263,20 +479,18 @@ class TinyEarthConfig:
         seed: Determinism settings.
         paths: Filesystem locations.
         logging: Diagnostics and tracking.
-        data: Dataset configuration. ``None`` when a command needs no data.
-        model: Model configuration. Typed in Phases 3-4.
-        training: Optimisation configuration. Typed in Phase 3.
+        data: Dataset configuration.
+        model: Model configuration.
+        training: Optimisation configuration.
+
+    The three component groups are optional so that commands needing only a
+    subset -- ``tinyearth-info`` needs none of them -- compose without them.
     """
 
     run: RunConfig = field(default_factory=RunConfig)
     seed: SeedConfig = field(default_factory=SeedConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
-
-    # Optional so that commands which need no data (e.g. `tinyearth-info`)
-    # compose without a data group.
     data: DataConfig | None = None
-
-    # Phase 3-4 placeholders. See the module docstring for why these are `Any`.
-    model: Any = None
-    training: Any = None
+    model: ModelConfig | None = None
+    training: TrainingConfig | None = None

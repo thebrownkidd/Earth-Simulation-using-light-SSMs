@@ -7,6 +7,7 @@ argument parsing, Hydra's global state, and the console-script wiring.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -143,6 +144,85 @@ def test_missing_real_dataset_gives_download_instructions(tmp_path: Path):
     assert result.returncode != 0
     assert "download_earthnet2021" in output
     assert "does not redistribute" in output
+
+
+def test_train_command_runs_end_to_end(tmp_path: Path):
+    result = _run(
+        "tinyearth.cli.train",
+        "+experiment=baseline_smoke",
+        "logging.rich=false",
+        "logging.tensorboard.enabled=false",
+        f"paths.outputs={tmp_path.as_posix()}",
+        f"paths.cache={(tmp_path / 'cache').as_posix()}",
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "training complete" in output
+
+    run_dir = tmp_path / "smoke" / "phase3"
+    for artefact in ("summary.json", "metrics.jsonl", "last.ckpt", "best.ckpt"):
+        assert (run_dir / artefact).is_file(), f"missing {artefact}"
+
+
+def test_train_reports_quality_and_efficiency(tmp_path: Path):
+    """Both metric families must appear automatically, without a flag."""
+    result = _run(
+        "tinyearth.cli.train",
+        "+experiment=baseline_smoke",
+        "logging.rich=false",
+        "logging.tensorboard.enabled=false",
+        f"paths.outputs={tmp_path.as_posix()}",
+        f"paths.cache={(tmp_path / 'cache').as_posix()}",
+    )
+    assert result.returncode == 0, result.stderr
+
+    summary = json.loads((tmp_path / "smoke" / "phase3" / "summary.json").read_text())
+    for key in ("val/mae", "val/rmse", "val/psnr", "val/ssim", "val/sam"):
+        assert key in summary, f"missing forecast-quality metric {key}"
+    for key in (
+        "efficiency/parameters",
+        "efficiency/latency_ms",
+        "efficiency/throughput_samples_per_s",
+        "params/backbone_fraction",
+    ):
+        assert key in summary, f"missing efficiency metric {key}"
+
+
+def test_swapping_the_backbone_changes_only_the_backbone(tmp_path: Path):
+    """The project's central claim, verified through the actual CLI."""
+    summaries = {}
+    for backbone in ("convlstm", "transformer"):
+        out = tmp_path / backbone
+        result = _run(
+            "tinyearth.cli.train",
+            "+experiment=baseline_smoke",
+            f"model={backbone}",
+            "logging.rich=false",
+            "logging.tensorboard.enabled=false",
+            f"paths.outputs={out.as_posix()}",
+            f"paths.cache={(tmp_path / 'cache').as_posix()}",
+        )
+        assert result.returncode == 0, result.stderr
+        summaries[backbone] = json.loads((out / "smoke" / "phase3" / "summary.json").read_text())
+
+    convlstm, transformer = summaries["convlstm"], summaries["transformer"]
+    assert convlstm["params/encoder"] == transformer["params/encoder"]
+    assert convlstm["params/decoder"] == transformer["params/decoder"]
+    assert convlstm["params/backbone"] != transformer["params/backbone"]
+
+
+def test_model_command_reports_size_and_cost(tmp_path: Path):
+    result = _run(
+        "tinyearth.cli.inspect_model",
+        "logging.rich=false",
+        "data.synthetic.size=32",
+        f"paths.outputs={tmp_path.as_posix()}",
+        f"paths.cache={(tmp_path / 'cache').as_posix()}",
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "parameters" in output
+    assert "latency (ms)" in output
 
 
 def test_invalid_override_fails_loudly():

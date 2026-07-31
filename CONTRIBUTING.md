@@ -28,7 +28,7 @@ pytest                         # test
 `pre-commit install` wires these to run on commit.
 
 For a fast inner loop, `pytest -m "not slow"` skips the subprocess CLI and notebook tests
-(~15s instead of ~85s). Run the full suite before pushing.
+(~30s instead of ~2min). Run the full suite before pushing.
 
 ### Formatting
 
@@ -97,22 +97,52 @@ Swappable research components — encoders, temporal backbones, decoders, losses
 themselves so configs can select them by name:
 
 ```python
-from tinyearth.models.temporal import TEMPORAL_BACKBONES   # Phase 4
+from tinyearth.models.base import TemporalBackbone
+from tinyearth.models.temporal import TEMPORAL_BACKBONES
 
-@TEMPORAL_BACKBONES.register()
+@TEMPORAL_BACKBONES.register("mamba")
 class MambaBackbone(TemporalBackbone):
     """Selective state space temporal backbone."""
+
+    def forward(self, latents: Tensor, horizon: int) -> Tensor:
+        """[B, T, D, h, w] -> [B, K, D, h, w]."""
 ```
 
-Registered as `mamba_backbone` (snake_case of the class name), or pass an explicit key.
-Duplicate keys raise rather than silently replacing — a silent replacement would change
-which architecture an experiment trains.
+Registered under the given key, or the snake_case class name if omitted. Duplicate keys
+raise rather than silently replacing — a silent replacement would change which architecture
+an experiment trains.
+
+**Then add the name to `BACKBONE_NAMES` in `tests/test_models.py`.** The parametrised
+`TestBackboneContract` applies the full interface suite automatically, and
+`TestControlledComparison` checks the fixed components stay identical.
+
+## The controlled comparison
+
+The project's central claim is that **only the temporal backbone changes** between
+experiments. Two rules protect it:
+
+- **Never add capacity to the encoder or decoder for one backbone's benefit.** If they
+  differ between runs, a difference in results is not attributable.
+- **Never give a backbone spatial modelling.** The encoder and decoder own that. A backbone
+  that also attends spatially has capacity the others lack.
+
+`tests/test_models.py::TestControlledComparison` and
+`tests/test_cli.py::test_swapping_the_backbone_changes_only_the_backbone` enforce both.
 
 ## Adding a loss
 
-New losses should be a new module plus a config entry, never an edit to the training loop.
-If adding a loss requires touching the trainer, the loss interface is wrong — fix that
-instead.
+A new module plus a config entry, never an edit to the training loop. If adding a loss
+requires touching the trainer, the loss interface is wrong — fix that instead.
+
+Implement `ForecastLoss`, register in `LOSSES`, and use `masked_mean` for the reduction
+rather than reimplementing it. Getting the masked reduction wrong — dividing by the total
+pixel count instead of the valid one — silently scales the loss down with cloudiness.
+
+## Adding a metric
+
+Test it against a **closed-form value**, not a plausible-looking one. A metric that is
+merely plausible is worse than none: it produces numbers that look publishable and are
+wrong. Add a masking test too — corrupting masked pixels must not change the result.
 
 ## Tests
 
@@ -146,6 +176,16 @@ Two conventions are load-bearing and must not be changed casually:
 - **`cldmsk == 1` means cloudy**; validity is `1 - cldmsk`. Inverting this trains the model
   exclusively on cloud, silently — losses still fall.
 - **Statistics come from the training split only**, with masked pixels excluded.
+
+## Efficiency measurements
+
+Efficiency is a primary result, not a diagnostic. When reporting one:
+
+- State the determinism setting. Deterministic kernels are not what a user deploys, so
+  benchmarking them understates real throughput. Use `seed.deterministic=false`.
+- Attach `tinyearth-info` output. A latency number without its hardware is not a result.
+- Do not hand-roll timing. `tinyearth.evaluation.efficiency` handles CUDA synchronisation
+  and warmup; naive timing overstates speed in two separate ways.
 
 ## Notebooks
 

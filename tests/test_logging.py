@@ -67,6 +67,65 @@ def test_file_handler_captures_debug_below_the_console_level(tmp_path: Path):
     assert "debug detail" in log_file.read_text(encoding="utf-8")
 
 
+class TestDisabledLoggerRecovery:
+    """Regression tests for library logs vanishing under `dictConfig`.
+
+    `logging.config.dictConfig` defaults to `disable_existing_loggers: True`,
+    which switches off every logger created at import time -- i.e. every
+    module-level `get_logger(__name__)`. Hydra's `job_logging: disabled` profile
+    does exactly this, and the symptom is total silence from library modules
+    with no error anywhere.
+    """
+
+    def test_setup_reenables_a_disabled_child(self):
+        child = get_logger("tinyearth.some.module")
+        child.disabled = True
+
+        setup_logging(rich=False, force=True)
+
+        assert not child.disabled
+
+    def test_dictconfig_disabling_is_undone(self):
+        """The end-to-end symptom: a library log line must actually be emitted.
+
+        Captured with a handler attached to the `tinyearth` logger rather than
+        via caplog, because the dictConfig below also sets the *root* level to
+        ERROR, which would filter caplog's root handler and mask the result.
+        """
+        import logging.config
+        from io import StringIO
+
+        child = get_logger("tinyearth.datasets.probe")
+        logging.config.dictConfig(
+            {"version": 1, "root": {"level": "ERROR"}, "disable_existing_loggers": True}
+        )
+        # Asserted via a local: asserting on `child.disabled` directly narrows it
+        # to Literal[True] for the rest of the function, and mypy cannot see that
+        # setup_logging mutates it, so it would call the remaining lines dead.
+        disabled_before = child.disabled
+        assert disabled_before, "precondition: dictConfig should have disabled it"
+
+        logger = setup_logging(rich=False, force=True)
+        stream = StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setLevel(logging.INFO)
+        logger.addHandler(handler)
+
+        child.info("library message")
+
+        assert not child.disabled
+        assert "library message" in stream.getvalue()
+
+    def test_non_tinyearth_loggers_are_left_alone(self):
+        """Re-enabling must not resurrect third-party loggers we did not disable."""
+        other = logging.getLogger("some_third_party")
+        other.disabled = True
+
+        setup_logging(rich=False, force=True)
+
+        assert other.disabled
+
+
 def test_get_logger_nests_plain_names():
     assert get_logger("models.ssm").name == "tinyearth.models.ssm"
 

@@ -1,0 +1,44 @@
+# Temporal transformer baseline.
+#
+# Attention over the TIME axis only: each spatial location is an independent
+# sequence. Spatiotemporal attention is deliberately avoided -- it would add
+# spatial capacity the other backbones lack, making differences unattributable,
+# and it costs O((T*h*w)^2) rather than O(T^2).
+#
+# Non-autoregressive: all K steps are emitted in one pass from learned query
+# positions. That is a real architectural advantage over the ConvLSTM for
+# latency, so read efficiency comparisons with it in mind.
+#
+# Capacity knob: backbone.kwargs.hidden_dim.
+
+latent_dim: 128
+
+encoder:
+  name: cnn
+  base_channels: 32
+  depth: 2
+  norm: group
+  activation: gelu
+
+backbone:
+  name: transformer
+  kwargs:
+    hidden_dim: 128
+    n_layers: 2
+    n_heads: 4          # must divide hidden_dim
+    ffn_multiplier: 4
+    dropout: 0.0
+    activation: gelu
+
+decoder:
+  name: cnn
+  base_channels: 32
+  depth: 2
+  norm: group
+  activation: gelu
+  output_activation: sigmoid
+
+loss:
+  terms:
+    l1: 1.0
+  kwargs: {}

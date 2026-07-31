@@ -1,6 +1,6 @@
 # Phase 1 — Repository setup
 
-**Status: complete and verified.** Superseded by [phase-2.md](phase-2.md).
+**Status: complete and verified.** Superseded by [phase-3.md](phase-3.md).
 
 ## Objective
 

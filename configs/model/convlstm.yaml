@@ -1,0 +1,40 @@
+# ConvLSTM baseline (Shi et al., 2015).
+#
+# The reference point for spatiotemporal forecasting. Strictly sequential in
+# time: step t depends on step t-1, so latency grows linearly in T + K and no
+# temporal parallelism is available. That cost profile is exactly what a state
+# space model is expected to improve on.
+#
+# Capacity knob: backbone.kwargs.hidden_dim. Cost grows roughly quadratically
+# in it, since the gate convolution reads (latent_dim + hidden_dim) channels
+# and writes 4 * hidden_dim.
+
+latent_dim: 128
+
+encoder:
+  name: cnn
+  base_channels: 32
+  depth: 2            # 4x spatial reduction; ConvLSTM cost is ~quadratic in extent
+  norm: group
+  activation: gelu
+
+backbone:
+  name: convlstm
+  kwargs:
+    hidden_dim: 128
+    n_layers: 2
+    kernel_size: 3
+    bias: true
+
+decoder:
+  name: cnn
+  base_channels: 32
+  depth: 2            # must equal encoder.depth
+  norm: group
+  activation: gelu
+  output_activation: sigmoid   # set to `none` under data.normalization=standardize
+
+loss:
+  terms:
+    l1: 1.0
+  kwargs: {}
