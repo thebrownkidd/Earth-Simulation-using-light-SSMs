@@ -1,0 +1,160 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tinyearth"
+version = "0.1.0"
+description = "How small can a State Space Model become while remaining competitive at Earth observation forecasting?"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Arpit Goel" }]
+keywords = ["state-space-models", "earth-observation", "forecasting", "efficiency"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "torch>=2.2",
+    "numpy>=1.24",
+    "hydra-core>=1.3",
+    "omegaconf>=2.3",
+    "tensorboard>=2.15",
+    "rich>=13.0",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "black>=24.0",
+    "mypy>=1.11",
+    "pre-commit>=3.7",
+]
+wandb = ["wandb>=0.17"]
+notebooks = ["jupyterlab>=4.0", "matplotlib>=3.8", "ipywidgets>=8.1"]
+
+[project.scripts]
+tinyearth-info = "tinyearth.cli.info:main"
+tinyearth-config = "tinyearth.cli.inspect_config:main"
+
+[project.urls]
+Repository = "https://github.com/ArpitGoel/Earth-Simulation-using-light-SSMs"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+tinyearth = ["py.typed"]
+
+# ---------------------------------------------------------------------------
+# Formatting: black is the *only* formatter. Ruff runs as a linter and its
+# formatter-overlapping rules are disabled below so the two cannot conflict.
+# ---------------------------------------------------------------------------
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "D",    # pydocstyle -- every public module/class/function is documented
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "A",    # flake8-builtins
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "ARG",  # unused arguments
+    "PTH",  # prefer pathlib over os.path
+    "RUF",  # ruff-specific
+    "ANN",  # missing type annotations
+    "T20",  # no stray print() outside CLI commands
+    "PLW",  # pylint warnings (mutable globals, shadowed loop vars, ...)
+]
+ignore = [
+    "D107",    # __init__ docstring -- documented on the class instead
+    "D203",    # incompatible with D211
+    "D213",    # incompatible with D212
+    "ANN401",  # allow `Any` in the deliberate config escape hatches
+    "E501",    # line length is black's job
+    "COM812",  # trailing-comma rule that fights the formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test functions are self-describing and their signatures are fixture-driven.
+"tests/**" = ["D100", "D103", "ANN", "SLF001"]
+"notebooks/**" = ["D", "ANN", "T20"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = ["tinyearth"]
+
+# ---------------------------------------------------------------------------
+# Type checking
+# ---------------------------------------------------------------------------
+[tool.mypy]
+# Not 3.10, despite `requires-python`: numpy ships stubs using `type` statements
+# that only parse under 3.12+, and mypy applies `python_version` to dependency
+# stubs as well as to our own code. The 3.10 language floor is instead enforced
+# by ruff's `target-version = "py310"` (pyupgrade rules), and by the CI matrix.
+python_version = "3.12"
+files = ["src", "tests"]
+strict = true
+warn_unreachable = true
+show_error_codes = true
+plugins = []
+
+[[tool.mypy.overrides]]
+# Tests are a package (tests/__init__.py) so this pattern resolves. Test
+# signatures are fixture-driven and self-describing; requiring annotations on
+# them adds noise without catching defects.
+module = ["tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+# These ship without complete stubs.
+module = ["hydra.*", "omegaconf.*", "tensorboard.*", "wandb.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "slow: tests that take more than a few seconds",
+    "gpu: tests that require a CUDA device",
+]
+filterwarnings = ["error::DeprecationWarning:tinyearth.*"]
+
+[tool.coverage.run]
+source = ["src/tinyearth"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]

@@ -1,0 +1,56 @@
+# TinyEarth root configuration.
+#
+# Composition order matters. The registered structured schema comes first so
+# that every group loaded afterwards is validated against it; `_self_` comes
+# last so that values written in *this* file win over the groups.
+#
+# Phase 1 status: the `data`, `model` and `training` groups are intentionally
+# absent. Phases 2-4 add them to the defaults list below.
+
+defaults:
+  - tinyearth_schema
+  - _self_
+  - override hydra/job_logging: disabled
+  - override hydra/hydra_logging: disabled
+
+run:
+  name: default
+  group: dev
+  notes: ""
+  tags: []
+  device: auto
+
+seed:
+  value: 42
+  deterministic: true
+  cudnn_benchmark: false
+
+paths:
+  data: data
+  outputs: outputs
+  cache: .cache
+
+logging:
+  level: INFO
+  rich: true
+  log_file: run.log
+  tensorboard:
+    enabled: true
+    flush_secs: 30
+  wandb:
+    enabled: false
+    project: tinyearth
+    entity: null
+    mode: online
+
+hydra:
+  # TinyEarth manages its own run directory via `paths` + `run.group`/`run.name`
+  # so that outputs are addressable by experiment identity rather than by
+  # wall-clock time. Hydra's own directory is kept only for its job metadata.
+  run:
+    dir: ${paths.outputs}/.hydra/${run.group}/${run.name}
+  sweep:
+    dir: ${paths.outputs}/.hydra/multirun/${run.group}
+    subdir: ${hydra.job.num}
+  job:
+    chdir: false
