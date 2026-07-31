@@ -37,8 +37,13 @@ from tinyearth.models.temporal.convlstm import TEMPORAL_BACKBONES
 
 __all__ = ["SinusoidalPositionalEncoding", "TemporalTransformerBackbone"]
 
-_MAX_POSITIONS = 512
-"""Ample for this project: history lengths sweep to 8 and horizons to 8."""
+_MAX_POSITIONS = 1024
+"""Ample for this project: history lengths sweep to 8 and horizons to 8.
+
+Sized well beyond that so cost-scaling sweeps can push ``T`` into the hundreds
+without hitting the bound. A sequence of length ``T`` with horizon ``K`` needs
+``T + K`` positions, so the usable history is ``_MAX_POSITIONS - K``.
+"""
 
 
 class SinusoidalPositionalEncoding(nn.Module):

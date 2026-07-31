@@ -1,0 +1,207 @@
+{
+  "generated": "2026-07-31T22:03:31+00:00",
+  "sweep": "mixing",
+  "setup": {
+    "tier": "tiny",
+    "image_size": 32,
+    "horizon": 1,
+    "batch_size": 2,
+    "latent_dim": 128,
+    "n_layers": 4,
+    "iterations": 5
+  },
+  "hardware": {
+    "device": "cpu",
+    "device_name": "AMD64 Family 23 Model 104 Stepping 1, AuthenticAMD",
+    "torch": "2.13.0+cpu",
+    "platform": "Windows-11-10.0.26200-SP0"
+  },
+  "exponents": {
+    "convlstm": {
+      "latency": 0.9804991047676561,
+      "gflops": 0.9747363419858905
+    },
+    "mamba": {
+      "latency": 1.0188657238076515,
+      "gflops": 0.9750652355159324
+    },
+    "s4d": {
+      "latency": 0.9438924321704852,
+      "gflops": 0.9750652355159324
+    },
+    "transformer": {
+      "latency": 1.0391652512773821,
+      "gflops": 0.9089992631410622
+    }
+  },
+  "rows": [
+    {
+      "backbone": "convlstm",
+      "history": 8,
+      "gflops_per_sample": 2.722103296,
+      "latency_ms": 20.382399998197798
+    },
+    {
+      "backbone": "convlstm",
+      "history": 16,
+      "gflops_per_sample": 5.1380224,
+      "latency_ms": 38.233999999647494
+    },
+    {
+      "backbone": "convlstm",
+      "history": 32,
+      "gflops_per_sample": 9.969860608,
+      "latency_ms": 74.43120000243653
+    },
+    {
+      "backbone": "convlstm",
+      "history": 64,
+      "gflops_per_sample": 19.633537024,
+      "latency_ms": 143.8966999994591
+    },
+    {
+      "backbone": "convlstm",
+      "history": 128,
+      "gflops_per_sample": 38.960889856,
+      "latency_ms": 282.9111999963061
+    },
+    {
+      "backbone": "convlstm",
+      "history": 256,
+      "gflops_per_sample": 77.61559552,
+      "latency_ms": 611.0373999981675
+    },
+    {
+      "backbone": "convlstm",
+      "history": 512,
+      "gflops_per_sample": 154.925006848,
+      "latency_ms": 1170.4914000001736
+    },
+    {
+      "backbone": "mamba",
+      "history": 8,
+      "gflops_per_sample": 0.276037632,
+      "latency_ms": 12.353099999018013
+    },
+    {
+      "backbone": "mamba",
+      "history": 16,
+      "gflops_per_sample": 0.521404416,
+      "latency_ms": 23.26349999930244
+    },
+    {
+      "backbone": "mamba",
+      "history": 32,
+      "gflops_per_sample": 1.012137984,
+      "latency_ms": 55.7976000054623
+    },
+    {
+      "backbone": "mamba",
+      "history": 64,
+      "gflops_per_sample": 1.99360512,
+      "latency_ms": 91.40590000606608
+    },
+    {
+      "backbone": "mamba",
+      "history": 128,
+      "gflops_per_sample": 3.956539392,
+      "latency_ms": 205.3611999945133
+    },
+    {
+      "backbone": "mamba",
+      "history": 256,
+      "gflops_per_sample": 7.882407936,
+      "latency_ms": 422.5237000064226
+    },
+    {
+      "backbone": "mamba",
+      "history": 512,
+      "gflops_per_sample": 15.734145024,
+      "latency_ms": 843.9362999997684
+    },
+    {
+      "backbone": "s4d",
+      "history": 8,
+      "gflops_per_sample": 0.20791296,
+      "latency_ms": 6.003999995300546
+    },
+    {
+      "backbone": "s4d",
+      "history": 16,
+      "gflops_per_sample": 0.39272448,
+      "latency_ms": 10.83249999646796
+    },
+    {
+      "backbone": "s4d",
+      "history": 32,
+      "gflops_per_sample": 0.76234752,
+      "latency_ms": 14.67630000115605
+    },
+    {
+      "backbone": "s4d",
+      "history": 64,
+      "gflops_per_sample": 1.5015936,
+      "latency_ms": 30.140800001390744
+    },
+    {
+      "backbone": "s4d",
+      "history": 128,
+      "gflops_per_sample": 2.98008576,
+      "latency_ms": 74.27820000157226
+    },
+    {
+      "backbone": "s4d",
+      "history": 256,
+      "gflops_per_sample": 5.93707008,
+      "latency_ms": 142.55750000302214
+    },
+    {
+      "backbone": "s4d",
+      "history": 512,
+      "gflops_per_sample": 11.85103872,
+      "latency_ms": 281.5081000007922
+    },
+    {
+      "backbone": "transformer",
+      "history": 8,
+      "gflops_per_sample": 0.127926272,
+      "latency_ms": 7.312699999602046
+    },
+    {
+      "backbone": "transformer",
+      "history": 16,
+      "gflops_per_sample": 0.211812352,
+      "latency_ms": 10.981200000969693
+    },
+    {
+      "backbone": "transformer",
+      "history": 32,
+      "gflops_per_sample": 0.379584512,
+      "latency_ms": 17.30170000519138
+    },
+    {
+      "backbone": "transformer",
+      "history": 64,
+      "gflops_per_sample": 0.715128832,
+      "latency_ms": 37.686700001358986
+    },
+    {
+      "backbone": "transformer",
+      "history": 128,
+      "gflops_per_sample": 1.386217472,
+      "latency_ms": 90.16220000194153
+    },
+    {
+      "backbone": "transformer",
+      "history": 256,
+      "gflops_per_sample": 2.728394752,
+      "latency_ms": 186.18810000043595
+    },
+    {
+      "backbone": "transformer",
+      "history": 512,
+      "gflops_per_sample": 5.412749312,
+      "latency_ms": 531.1497000002419
+    }
+  ]
+}
