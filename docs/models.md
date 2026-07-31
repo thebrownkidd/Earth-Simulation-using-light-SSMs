@@ -69,6 +69,23 @@ defeating the registry. Unknown keys still fail loudly at construction.
 
 ---
 
+## The four backbones
+
+| Key | Architecture | Mixes over time by |
+| --- | --- | --- |
+| `convlstm` | ConvLSTM (Shi et al., 2015) | Gated recurrence; sequential |
+| `transformer` | Temporal transformer | Attention over `T`; parallel |
+| `s4d` | Diagonal SSM (Gu et al., 2022) | FFT convolution; parallel |
+| `mamba` | Selective SSM (Gu and Dao, 2023) | Input-dependent scan; sequential |
+
+`convlstm` is the only autoregressive one; the other three emit all `K` forecast
+steps in a single pass. State that when comparing latency -- it is not a property
+of the mixing mechanism.
+
+Measured costs at matched parameter budgets, and the finding that parameter
+efficiency does **not** imply FLOP efficiency, are in
+[phase-4.md](phase-4.md#the-finding-parameter-efficiency-is-not-flop-efficiency).
+
 ## Baselines (Phase 3)
 
 Their purpose is **correctness and a reference point**, not benchmark numbers.

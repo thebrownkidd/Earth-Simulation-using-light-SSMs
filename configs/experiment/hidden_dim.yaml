@@ -1,0 +1,40 @@
+# @package _global_
+#
+# Objective
+#   The width scaling curve within one architecture, at finer granularity than
+#   the four size tiers give.
+#
+# Configuration
+#   hidden_dim in 64, 128, 256, 512, everything else fixed.
+#
+# Expected output
+#   One run per width; val/mae and params/total against hidden_dim.
+#
+# Interpretation
+#   Where the curve flattens is where extra width stops buying quality -- the
+#   practical answer to "how small can this be".
+#
+# Usage
+#   tinyearth-train --multirun +experiment=hidden_dim \
+#       model.backbone.kwargs.hidden_dim=64,128,256,512
+
+defaults:
+  - override /data: synthetic
+  - override /model: s4d
+  - override /training: default
+
+run:
+  name: hidden_${model.backbone.kwargs.hidden_dim}
+  group: hidden_dim
+  notes: "Width scaling within one architecture."
+  tags: [phase4, width]
+
+data:
+  history_length: 4
+  horizon: 1
+
+model:
+  backbone:
+    size: null           # explicit hidden_dim below is the axis under study
+    kwargs:
+      hidden_dim: 128

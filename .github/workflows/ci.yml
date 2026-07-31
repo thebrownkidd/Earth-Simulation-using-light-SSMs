@@ -59,3 +59,5 @@ jobs:
           tinyearth-data +experiment=data_smoke logging.rich=false
           tinyearth-train +experiment=baseline_smoke logging.rich=false logging.tensorboard.enabled=false
           tinyearth-train +experiment=baseline_smoke model=transformer logging.rich=false logging.tensorboard.enabled=false
+          tinyearth-train +experiment=ssm_smoke model=s4d logging.rich=false logging.tensorboard.enabled=false
+          tinyearth-train +experiment=ssm_smoke model=mamba logging.rich=false logging.tensorboard.enabled=false

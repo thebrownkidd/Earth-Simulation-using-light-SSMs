@@ -315,6 +315,11 @@ class BackboneConfig:
     Attributes:
         name: Registry key from
             :data:`~tinyearth.models.temporal.TEMPORAL_BACKBONES`.
+        size: Optional calibrated size tier -- ``tiny``, ``small``, ``base`` or
+            ``large`` -- which sets ``hidden_dim`` to the width that puts this
+            backbone at the tier's parameter budget. This is what makes the
+            scaling study a single override across architectures. An explicit
+            ``kwargs.hidden_dim`` wins over it.
         kwargs: Backbone-specific arguments, e.g. ``hidden_dim``, ``n_layers``.
             Deliberately untyped: enumerating them would force a schema change
             for every new backbone, defeating the registry. Unknown keys still
@@ -322,6 +327,7 @@ class BackboneConfig:
     """
 
     name: str = "convlstm"
+    size: str | None = None
     kwargs: dict[str, Any] = field(default_factory=dict)
 
 
