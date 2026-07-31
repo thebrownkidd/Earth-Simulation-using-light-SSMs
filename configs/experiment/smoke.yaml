@@ -1,0 +1,34 @@
+# @package _global_
+#
+# Objective
+#   Verify end-to-end that config composition, seeding, device resolution,
+#   logging and run-directory creation all work. This is the Phase 1
+#   acceptance experiment and the template every later experiment follows.
+#
+# Configuration
+#   Overrides run identity and forces deterministic CPU-friendly settings.
+#
+# Expected output
+#   A directory `outputs/smoke/phase1/` containing `resolved_config.yaml` and
+#   `run.log`, and a console summary reporting device, seed and fingerprint.
+#
+# Interpretation
+#   Success means the scaffold is sound. It says nothing about model quality --
+#   no model exists yet.
+#
+# Usage
+#   tinyearth-config +experiment=smoke
+
+run:
+  name: phase1
+  group: smoke
+  notes: "Phase 1 scaffold verification: no model, no data, no training."
+  tags: [phase1, smoke]
+  device: auto
+
+seed:
+  value: 1234
+  deterministic: true
+
+logging:
+  level: DEBUG

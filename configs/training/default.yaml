@@ -1,0 +1,38 @@
+# Default training configuration.
+
+epochs: 20
+
+optimizer:
+  name: adamw
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  betas: [0.9, 0.999]
+  momentum: 0.9        # SGD only
+
+scheduler:
+  name: cosine
+  warmup_epochs: 1     # non-zero matters for the transformer, which is unstable without it
+  min_lr: 1.0e-6
+  step_size: 10
+  gamma: 0.1
+  patience: 5
+
+checkpoint:
+  enabled: true
+  save_last: true
+  save_best: true
+  monitor: val/loss
+  mode: min
+
+evaluation:
+  every_n_epochs: 1
+  efficiency: true     # primary result; should never depend on remembering a flag
+  efficiency_warmup: 3
+  efficiency_iterations: 10
+  data_range: 1.0      # reflectance in [0, 1]
+
+grad_clip: 1.0
+amp: false             # CUDA only; ignored on CPU
+log_every_n_steps: 10
+max_steps_per_epoch: null
+early_stopping_patience: null

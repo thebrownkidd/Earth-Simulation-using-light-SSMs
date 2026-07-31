@@ -1,0 +1,47 @@
+# Selective state space model (Mamba). Gu and Dao, 2023.
+#
+# Delta, B and C become functions of the input, so the model can decide per
+# step how much of an observation to write into state. For Earth observation
+# that is substantive: a cloudy frame carries little surface information, and a
+# selective model can learn to hold state through it.
+#
+# The cost: input-dependent parameters make the system time-varying, so it
+# cannot be written as one convolution and the scan is sequential. At T <= 8
+# that costs little; at long sequence lengths it would need a parallel scan.
+#
+# state_dim is small (16) by design -- selectivity carries the capacity here,
+# not state size.
+
+latent_dim: 128
+
+encoder:
+  name: cnn
+  base_channels: 32
+  depth: 2
+  norm: group
+  activation: gelu
+
+backbone:
+  name: mamba
+  size: null
+  kwargs:
+    hidden_dim: 128
+    n_layers: 4
+    state_dim: 16
+    expand: 2
+    conv_kernel: 4
+    dt_rank: null       # null derives ceil(hidden_dim / 16)
+    dropout: 0.0
+
+decoder:
+  name: cnn
+  base_channels: 32
+  depth: 2
+  norm: group
+  activation: gelu
+  output_activation: sigmoid
+
+loss:
+  terms:
+    l1: 1.0
+  kwargs: {}

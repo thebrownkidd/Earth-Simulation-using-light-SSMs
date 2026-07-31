@@ -1,0 +1,45 @@
+# @package _global_
+#
+# Objective
+#   The SSM-specific question: how much state does the recurrence need? This
+#   axis has no counterpart in the ConvLSTM or transformer, which is precisely
+#   why it is interesting -- it is the SSM's own capacity knob.
+#
+# Configuration
+#   state_dim in 8, 16, 32, 64, 128 at fixed width and depth.
+#
+# Expected output
+#   One run per state size; val/mae and params/total against state_dim.
+#
+# Interpretation
+#   state_dim costs only ~4*H parameters per unit, so it is a CHEAP axis
+#   compared to width. If quality improves with state_dim while parameters
+#   barely move, that is the most direct evidence for the project's thesis.
+#
+#   Only meaningful for s4d and mamba.
+#
+# Usage
+#   tinyearth-train --multirun +experiment=state_dim \
+#       model.backbone.kwargs.state_dim=8,16,32,64,128
+
+defaults:
+  - override /data: synthetic
+  - override /model: s4d
+  - override /training: default
+
+run:
+  name: state_${model.backbone.kwargs.state_dim}
+  group: state_dim
+  notes: "SSM state size: the cheap capacity axis."
+  tags: [phase4, state]
+
+data:
+  history_length: 4
+  horizon: 1
+
+model:
+  backbone:
+    size: null
+    kwargs:
+      hidden_dim: 256
+      state_dim: 64

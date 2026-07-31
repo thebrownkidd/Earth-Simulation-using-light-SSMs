@@ -1,0 +1,43 @@
+# @package _global_
+#
+# Objective
+#   Verify the Phase 2 data pipeline end to end without requiring the real
+#   dataset: generation, minicube decoding, windowing, cloud masking,
+#   normalisation, the deterministic train/val partition, and batching.
+#
+# Configuration
+#   Synthetic cubes in the EarthNet2021 format, small enough to run in seconds.
+#   History 4 -> horizon 1, cloud masking on with the zero fill policy.
+#
+# Expected output
+#   A report of cube and window counts for train and val, the resolved shapes
+#   of one batch (images [4,4,4,16,16], target [4,1,4,16,16]), the observed
+#   cloud-valid fraction (~0.8, matching synthetic.cloud_fraction=0.2), and
+#   confirmation that two passes with the same seed give identical batches.
+#
+# Interpretation
+#   Success means the pipeline is wired correctly and is reproducible. It says
+#   NOTHING about forecasting quality -- the data is synthetic and the numbers
+#   from it are not meaningful.
+#
+# Usage
+#   tinyearth-data +experiment=data_smoke
+
+defaults:
+  - override /data: synthetic
+
+run:
+  name: phase2
+  group: smoke
+  notes: "Phase 2 data pipeline verification on synthetic cubes."
+  tags: [phase2, smoke, data]
+
+seed:
+  value: 1234
+  deterministic: true
+
+data:
+  history_length: 4
+  horizon: 1
+  loader:
+    batch_size: 4

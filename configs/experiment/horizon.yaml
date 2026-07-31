@@ -1,0 +1,39 @@
+# @package _global_
+#
+# Objective
+#   How fast does quality decay with forecast distance, and does the decay rate
+#   differ by architecture?
+#
+# Configuration
+#   horizon in 1, 2, 4, 8 at a fixed size tier and fixed history.
+#
+# Expected output
+#   One run per horizon; val/mae against data.horizon.
+#
+# Interpretation
+#   Longer horizons are strictly harder, so MAE will rise -- the question is the
+#   SHAPE. A model whose error grows slowly is doing genuine temporal
+#   extrapolation rather than persistence. Compare against a persistence
+#   baseline before claiming any of it.
+#
+# Usage
+#   tinyearth-train --multirun +experiment=horizon data.horizon=1,2,4,8
+
+defaults:
+  - override /data: synthetic
+  - override /model: s4d
+  - override /training: default
+
+run:
+  name: horizon_${data.horizon}
+  group: horizon
+  notes: "Quality decay with forecast distance."
+  tags: [phase4, horizon]
+
+data:
+  history_length: 8
+  horizon: 1
+
+model:
+  backbone:
+    size: small

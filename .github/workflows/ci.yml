@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.11", "3.13"]
+        include:
+          - os: windows-latest
+            python-version: "3.13"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        # CPU wheels only -- CI has no GPU, and the CUDA builds are ~2.5 GB.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" --extra-index-url https://download.pytorch.org/whl/cpu
+
+      - name: Format check
+        run: black --check src tests
+
+      - name: Lint
+        run: ruff check src tests
+
+      - name: Type check
+        run: mypy
+
+      - name: Test
+        # Rich's width heuristics are unhelpful in CI logs.
+        env:
+          TERM: dumb
+        run: pytest -q --cov --cov-report=term-missing
+
+      - name: Entry point smoke check
+        run: |
+          tinyearth-info
+          tinyearth-config +experiment=smoke logging.rich=false
+          tinyearth-data +experiment=data_smoke logging.rich=false
+          tinyearth-train +experiment=baseline_smoke logging.rich=false logging.tensorboard.enabled=false
+          tinyearth-train +experiment=baseline_smoke model=transformer logging.rich=false logging.tensorboard.enabled=false
+          tinyearth-train +experiment=ssm_smoke model=s4d logging.rich=false logging.tensorboard.enabled=false
+          tinyearth-train +experiment=ssm_smoke model=mamba logging.rich=false logging.tensorboard.enabled=false
