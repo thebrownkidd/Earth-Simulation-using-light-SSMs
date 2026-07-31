@@ -192,7 +192,24 @@ Efficiency is a primary result, not a diagnostic. When reporting one:
 `tests/test_notebooks.py` executes every notebook under `notebooks/`, so a broken example
 fails the suite. Clear outputs before committing; the test enforces this.
 
+## Reporting results
+
+The bar is that a reader can reproduce any reported number from the repository alone.
+
+- **Never report a quality number from synthetic data.** It is meaningless. The default
+  dataset is synthetic, so this is an easy mistake to make.
+- **Report FLOPs and latency next to parameter count.** They disagree here: the SSM is more
+  parameter-efficient and *less* FLOP-efficient. Quoting one alone misleads.
+- **State the architectural caveats.** `convlstm` is autoregressive and the other three are
+  not; `mamba`'s scan is sequential; the `O(T)` vs `O(T²)` argument does not apply at
+  `T ≤ 8`. Each of these makes some architecture look better for reasons unrelated to the
+  claim being made.
+- **Attach the hardware.** `tinyearth-info` output belongs with any efficiency result.
+
 ## Commits
 
 Write commit messages that explain *why*. Keep each phase's work coherent — a reader
 should be able to follow the project's development from the log.
+
+Record decisions, reversals and bugs in [`docs/project-log.md`](docs/project-log.md). The
+reasons behind a research codebase decay faster than the code does.

@@ -1,0 +1,50 @@
+# @package _global_
+#
+# Objective
+#   How does forecast quality scale with parameter count, and does the SSM hold
+#   its quality at a smaller budget than the baselines? This is the project's
+#   central question.
+#
+# Configuration
+#   Four size tiers x four backbones, at MATCHED parameter budgets. Depth is
+#   fixed at 4 in every run and only hidden_dim varies, so a difference between
+#   2M and 20M is attributable to width alone rather than to width and depth
+#   together. Widths are calibrated in tinyearth.models.sizes.
+#
+# Expected output
+#   One run directory per (backbone, size), each with summary.json carrying
+#   params/total, val/mae and the efficiency block. Collate with:
+#       python scripts/collate_results.py --group scaling
+#
+# Interpretation
+#   Read val/mae against params/total. The SSM claim is supported if s4d or
+#   mamba reaches a given quality at a smaller budget than convlstm or
+#   transformer. Read latency alongside: at T<=8 the SSM's asymptotic advantage
+#   does not apply, so a speed difference here is constant factors, not
+#   complexity class.
+#
+#   ON SYNTHETIC DATA THE QUALITY NUMBERS ARE MEANINGLESS. Use data=earthnet2021.
+#
+# Usage
+#   tinyearth-train --multirun +experiment=scaling \
+#       model=s4d,mamba,convlstm,transformer \
+#       model.backbone.size=tiny,small,base,large
+
+defaults:
+  - override /data: synthetic
+  - override /model: s4d
+  - override /training: default
+
+run:
+  name: ${model.backbone.name}_${model.backbone.size}
+  group: scaling
+  notes: "Scaling at matched parameter budgets; depth fixed, width varies."
+  tags: [phase4, scaling]
+
+data:
+  history_length: 4
+  horizon: 1
+
+model:
+  backbone:
+    size: base

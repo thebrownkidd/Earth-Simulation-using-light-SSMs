@@ -1,0 +1,59 @@
+# @package _global_
+#
+# Objective
+#   Verify the Phase 4 SSM backbones end to end: kernel generation, the FFT
+#   convolution, the selective scan, size-tier resolution, training, and the
+#   metric and efficiency reporting -- all on synthetic data in seconds.
+#
+# Configuration
+#   S4D at reduced width, synthetic cubes, 2 epochs x 4 steps. Swap with
+#   `model=mamba`, `model=convlstm` or `model=transformer`; nothing else changes.
+#
+# Expected output
+#   A parameter breakdown with the majority of parameters in the backbone, a
+#   decreasing train loss, the five forecast metrics, an efficiency table, and
+#   summary.json in the run directory.
+#
+# Interpretation
+#   Success means the SSM stack is correct. The metric VALUES are meaningless --
+#   synthetic data, 8 optimiser steps. Nothing here is a result.
+#
+# Usage
+#   tinyearth-train +experiment=ssm_smoke
+#   tinyearth-train +experiment=ssm_smoke model=mamba
+
+defaults:
+  - override /data: synthetic
+  - override /model: s4d
+  - override /training: smoke
+
+run:
+  name: phase4
+  group: smoke
+  notes: "Phase 4 SSM verification on synthetic cubes."
+  tags: [phase4, smoke, ssm]
+
+seed:
+  value: 1234
+  deterministic: true
+
+data:
+  history_length: 4
+  horizon: 2
+  synthetic:
+    size: 32
+  loader:
+    batch_size: 4
+
+model:
+  latent_dim: 32
+  encoder:
+    base_channels: 16
+  decoder:
+    base_channels: 16
+  backbone:
+    size: null
+    kwargs:
+      hidden_dim: 32
+      n_layers: 2
+      state_dim: 16

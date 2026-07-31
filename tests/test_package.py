@@ -47,6 +47,7 @@ SUBPACKAGES = [
     "tinyearth.models.forecaster",
     "tinyearth.models.layers",
     "tinyearth.models.losses",
+    "tinyearth.models.sizes",
     "tinyearth.models.temporal",
     "tinyearth.training",
     "tinyearth.training.optim",
@@ -122,13 +123,20 @@ def test_registered_backbones_are_discoverable():
     """Configs select the component under study by name."""
     from tinyearth.models import TEMPORAL_BACKBONES
 
-    assert set(TEMPORAL_BACKBONES.keys()) == {"convlstm", "transformer"}
+    assert set(TEMPORAL_BACKBONES.keys()) == {"convlstm", "transformer", "s4d", "mamba"}
 
 
 def test_registered_losses_are_discoverable():
     from tinyearth.models import LOSSES
 
     assert {"l1", "l2", "charbonnier"} <= set(LOSSES.keys())
+
+
+def test_every_backbone_has_a_size_calibration():
+    """A backbone without calibrated tiers cannot join the scaling study."""
+    from tinyearth.models import SIZE_TIERS, TEMPORAL_BACKBONES
+
+    assert set(SIZE_TIERS) == set(TEMPORAL_BACKBONES.keys())
 
 
 def test_info_report_renders():

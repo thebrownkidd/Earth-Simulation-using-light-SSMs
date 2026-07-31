@@ -211,6 +211,68 @@ def test_swapping_the_backbone_changes_only_the_backbone(tmp_path: Path):
     assert convlstm["params/backbone"] != transformer["params/backbone"]
 
 
+def test_ssm_smoke_experiment_trains(tmp_path: Path):
+    result = _run(
+        "tinyearth.cli.train",
+        "+experiment=ssm_smoke",
+        "logging.rich=false",
+        "logging.tensorboard.enabled=false",
+        f"paths.outputs={tmp_path.as_posix()}",
+        f"paths.cache={(tmp_path / 'cache').as_posix()}",
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "smoke" / "phase4" / "summary.json").is_file()
+
+
+@pytest.mark.parametrize("backbone", ["s4d", "mamba", "convlstm", "transformer"])
+def test_every_backbone_trains_from_one_sweep_config(tmp_path: Path, backbone):
+    """A cross-architecture sweep must run unchanged on all four backbones.
+
+    The sweep config sets SSM-specific kwargs; the ConvLSTM and transformer must
+    drop them rather than crash, or no such sweep is possible.
+    """
+    result = _run(
+        "tinyearth.cli.train",
+        "+experiment=ssm_smoke",
+        f"model={backbone}",
+        "logging.rich=false",
+        "logging.tensorboard.enabled=false",
+        f"paths.outputs={tmp_path.as_posix()}",
+        f"paths.cache={(tmp_path / 'cache').as_posix()}",
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_typo_in_a_backbone_argument_still_fails(tmp_path: Path):
+    """Dropping inapplicable kwargs must not swallow genuine typos."""
+    result = _run(
+        "tinyearth.cli.train",
+        "+experiment=ssm_smoke",
+        "+model.backbone.kwargs.hiden_dim=64",
+        "logging.rich=false",
+        f"paths.outputs={tmp_path.as_posix()}",
+        f"paths.cache={(tmp_path / 'cache').as_posix()}",
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "hiden_dim" in output
+
+
+def test_size_tier_resolves_to_a_calibrated_width(tmp_path: Path):
+    result = _run(
+        "tinyearth.cli.inspect_model",
+        "model=s4d",
+        "model.backbone.size=tiny",
+        "logging.rich=false",
+        "data.synthetic.size=16",
+        f"paths.outputs={tmp_path.as_posix()}",
+        f"paths.cache={(tmp_path / 'cache').as_posix()}",
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "hidden_dim=272" in output
+
+
 def test_model_command_reports_size_and_cost(tmp_path: Path):
     result = _run(
         "tinyearth.cli.inspect_model",

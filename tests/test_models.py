@@ -307,8 +307,10 @@ class TestBackboneSpecifics:
         large = count_parameters(ConvLSTMBackbone(latent_dim=LATENT, hidden_dim=64))
         assert large > small * 3
 
-    def test_registry_holds_both_baselines(self):
-        assert set(TEMPORAL_BACKBONES.keys()) == set(BACKBONE_NAMES)
+    def test_registry_holds_the_baselines_and_the_ssms(self):
+        """Phase 4 added s4d and mamba; the baselines remain."""
+        assert set(BACKBONE_NAMES) <= set(TEMPORAL_BACKBONES.keys())
+        assert set(TEMPORAL_BACKBONES.keys()) == {"convlstm", "transformer", "s4d", "mamba"}
 
 
 @pytest.mark.parametrize("name", BACKBONE_NAMES)

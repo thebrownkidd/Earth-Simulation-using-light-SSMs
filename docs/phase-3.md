@@ -1,6 +1,6 @@
 # Phase 3 — Baselines, training and metrics
 
-**Status: complete and verified.**
+**Status: complete and verified.** Superseded by [phase-4.md](phase-4.md).
 
 ## Objective
 

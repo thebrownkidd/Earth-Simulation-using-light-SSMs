@@ -13,6 +13,7 @@ a configuration edit rather than a code edit.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 from tinyearth.config.schema import LossConfig, ModelConfig
@@ -20,6 +21,7 @@ from tinyearth.models.decoders import DECODERS
 from tinyearth.models.encoders import ENCODERS
 from tinyearth.models.forecaster import Forecaster
 from tinyearth.models.losses import LOSSES, CompositeLoss, ForecastLoss
+from tinyearth.models.sizes import resolve_hidden_dim
 from tinyearth.models.temporal import TEMPORAL_BACKBONES
 from tinyearth.utils.logging import get_logger
 
@@ -28,11 +30,70 @@ __all__ = ["build_backbone", "build_forecaster", "build_loss"]
 logger = get_logger(__name__)
 
 
+def _accepted_arguments(name: str) -> set[str]:
+    """Return the keyword arguments a registered backbone accepts.
+
+    Args:
+        name: Registry key.
+
+    Returns:
+        Parameter names of the class constructor, excluding ``self``.
+    """
+    signature = inspect.signature(TEMPORAL_BACKBONES.get(name).__init__)
+    return {parameter for parameter in signature.parameters if parameter != "self"}
+
+
+def _partition_kwargs(name: str, kwargs: dict[str, Any]) -> tuple[dict[str, Any], set[str]]:
+    """Split kwargs into those this backbone accepts and those it does not.
+
+    A sweep runs one config across several architectures, so a config that sets
+    ``state_dim`` for an SSM will also reach the ConvLSTM, which has no such
+    argument. Those must be dropped, or no cross-architecture sweep is possible.
+
+    But dropping *everything* unrecognised would silently swallow typos, and a
+    misspelled ``hidden_dim`` that trains a default-width model is exactly the
+    kind of error that wastes a sweep. So an argument is only droppable if some
+    *other* registered backbone accepts it -- that is what marks it as
+    architecture-specific rather than wrong.
+
+    Args:
+        name: Registry key of the backbone being built.
+        kwargs: Requested arguments.
+
+    Returns:
+        ``(accepted, droppable)``.
+
+    Raises:
+        ValueError: If an argument is accepted by no registered backbone.
+    """
+    accepted_here = _accepted_arguments(name)
+    accepted_anywhere: set[str] = set()
+    for other in TEMPORAL_BACKBONES:
+        accepted_anywhere |= _accepted_arguments(other)
+
+    accepted = {key: value for key, value in kwargs.items() if key in accepted_here}
+    unknown = set(kwargs) - accepted_here
+
+    typos = unknown - accepted_anywhere
+    if typos:
+        raise ValueError(
+            f"Unknown backbone argument(s) {sorted(typos)} for {name!r}. "
+            f"No registered backbone accepts them, so this is a typo rather than "
+            f"an architecture-specific option. {name!r} accepts: "
+            f"{', '.join(sorted(accepted_here - {'latent_dim'}))}."
+        )
+    return accepted, unknown
+
+
 def build_backbone(name: str, latent_dim: int, **kwargs: Any) -> Any:
     """Construct a temporal backbone by registry name.
 
+    Arguments that belong to a different architecture are dropped, so one sweep
+    config can run across all four backbones. Genuine typos still raise -- see
+    :func:`_partition_kwargs`.
+
     Args:
-        name: Registry key, e.g. ``"convlstm"`` or ``"transformer"``.
+        name: Registry key, e.g. ``"convlstm"``, ``"s4d"``.
         latent_dim: Latent channel count; must match the encoder and decoder.
         **kwargs: Backbone-specific arguments.
 
@@ -40,10 +101,17 @@ def build_backbone(name: str, latent_dim: int, **kwargs: Any) -> Any:
         The constructed backbone.
 
     Raises:
-        UnknownComponentError: If ``name`` is not registered. The message lists
-            what is available, since this is almost always a config typo.
+        UnknownComponentError: If ``name`` is not registered.
+        ValueError: If an argument is accepted by no registered backbone.
     """
-    return TEMPORAL_BACKBONES.build(name, latent_dim=latent_dim, **kwargs)
+    accepted, dropped = _partition_kwargs(name, kwargs)
+    if dropped:
+        logger.info(
+            "%r does not take %s; dropping (they belong to another architecture)",
+            name,
+            ", ".join(sorted(dropped)),
+        )
+    return TEMPORAL_BACKBONES.build(name, latent_dim=latent_dim, **accepted)
 
 
 def build_forecaster(cfg: ModelConfig, in_channels: int, horizon: int) -> Forecaster:
@@ -88,10 +156,30 @@ def build_forecaster(cfg: ModelConfig, in_channels: int, horizon: int) -> Foreca
         activation=cfg.decoder.activation,
         output_activation=cfg.decoder.output_activation,
     )
+    backbone_kwargs = dict(cfg.backbone.kwargs)
+    if cfg.backbone.size is not None:
+        width = resolve_hidden_dim(cfg.backbone.name, cfg.backbone.size)
+        if "hidden_dim" in backbone_kwargs:
+            logger.info(
+                "backbone.size=%r suggests hidden_dim=%d, but kwargs.hidden_dim=%s is set "
+                "explicitly and wins",
+                cfg.backbone.size,
+                width,
+                backbone_kwargs["hidden_dim"],
+            )
+        else:
+            backbone_kwargs["hidden_dim"] = width
+            logger.info(
+                "size tier %r -> hidden_dim=%d for %r",
+                cfg.backbone.size,
+                width,
+                cfg.backbone.name,
+            )
+
     backbone = build_backbone(
         cfg.backbone.name,
         latent_dim=cfg.latent_dim,
-        **dict(cfg.backbone.kwargs),
+        **backbone_kwargs,
     )
 
     model = Forecaster(encoder=encoder, backbone=backbone, decoder=decoder, horizon=horizon)

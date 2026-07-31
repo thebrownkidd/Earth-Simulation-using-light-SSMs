@@ -13,8 +13,12 @@ point, not benchmark numbers:
 ``transformer``
     Attention over the temporal axis only, non-autoregressive.
 
-Phase 4 adds the State Space Model backbones the project's research question is
-actually about.
+``s4d``
+    Diagonal state space model (Gu et al., 2022). Parallel in time via an FFT
+    convolution. **The backbone this project exists to study.**
+``mamba``
+    Selective state space model (Gu and Dao, 2023). Input-dependent dynamics, at
+    the cost of a sequential scan.
 """
 
 from __future__ import annotations
@@ -24,6 +28,12 @@ from tinyearth.models.temporal.convlstm import (
     ConvLSTMBackbone,
     ConvLSTMCell,
 )
+from tinyearth.models.temporal.selective_ssm import (
+    MambaBackbone,
+    SelectiveSSMBlock,
+    selective_scan,
+)
+from tinyearth.models.temporal.ssm import S4DBackbone, S4DBlock, S4DKernel
 from tinyearth.models.temporal.transformer import (
     SinusoidalPositionalEncoding,
     TemporalTransformerBackbone,
@@ -33,6 +43,12 @@ __all__ = [
     "TEMPORAL_BACKBONES",
     "ConvLSTMBackbone",
     "ConvLSTMCell",
+    "MambaBackbone",
+    "S4DBackbone",
+    "S4DBlock",
+    "S4DKernel",
+    "SelectiveSSMBlock",
     "SinusoidalPositionalEncoding",
     "TemporalTransformerBackbone",
+    "selective_scan",
 ]

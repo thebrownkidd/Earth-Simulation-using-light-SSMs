@@ -1,0 +1,39 @@
+# @package _global_
+#
+# Objective
+#   How much context does the forecast actually need, and do architectures
+#   differ in how well they use a longer history? An SSM keeps a compressed
+#   state, so it may degrade differently from attention as history grows.
+#
+# Configuration
+#   history_length in 2, 4, 6, 8 at a fixed size tier and fixed horizon.
+#
+# Expected output
+#   One run per history length; val/mae against data.history_length.
+#
+# Interpretation
+#   Flat curve means the extra context is not being used. Note that latency
+#   also grows with history, so a small quality gain at T=8 may not be worth
+#   its cost -- read the two together.
+#
+# Usage
+#   tinyearth-train --multirun +experiment=history_length data.history_length=2,4,6,8
+
+defaults:
+  - override /data: synthetic
+  - override /model: s4d
+  - override /training: default
+
+run:
+  name: history_${data.history_length}
+  group: history_length
+  notes: "How much context the forecast needs."
+  tags: [phase4, history]
+
+data:
+  history_length: 4
+  horizon: 1
+
+model:
+  backbone:
+    size: small

@@ -1,0 +1,49 @@
+# Diagonal state space model (S4D). Gu et al., NeurIPS 2022.
+#
+# THE BACKBONE THIS PROJECT EXISTS TO STUDY.
+#
+# A per-channel linear system with diagonal A, discretised with a learned step
+# size and applied as a single FFT convolution over time -- so it is parallel
+# in time, unlike the ConvLSTM.
+#
+# Parameter efficiency is the point: temporal mixing costs ~4*H*N parameters
+# against attention's ~4*H^2. At H=256, N=64 that is 65k versus 262k.
+#
+# Note the asymptotic argument does NOT apply at this project's sequence
+# lengths (T <= 8). See docs/models.md.
+#
+# Capacity: backbone.size (calibrated tiers) or backbone.kwargs.hidden_dim.
+# state_dim is the SSM-specific knob the state-dimension sweep varies.
+
+latent_dim: 128
+
+encoder:
+  name: cnn
+  base_channels: 32
+  depth: 2
+  norm: group
+  activation: gelu
+
+backbone:
+  name: s4d
+  size: null            # tiny | small | base | large; sets hidden_dim
+  kwargs:
+    hidden_dim: 128
+    n_layers: 4         # tiers are calibrated at this depth -- keep it fixed
+    state_dim: 64
+    ffn_multiplier: 2
+    dropout: 0.0
+    activation: gelu
+
+decoder:
+  name: cnn
+  base_channels: 32
+  depth: 2
+  norm: group
+  activation: gelu
+  output_activation: sigmoid
+
+loss:
+  terms:
+    l1: 1.0
+  kwargs: {}
