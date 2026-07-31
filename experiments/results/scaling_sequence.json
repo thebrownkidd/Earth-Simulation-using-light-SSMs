@@ -1,0 +1,159 @@
+{
+  "generated": "2026-07-31T21:52:35+00:00",
+  "sweep": "sequence",
+  "setup": {
+    "tier": "tiny",
+    "image_size": 32,
+    "horizon": 1,
+    "batch_size": 2,
+    "latent_dim": 128,
+    "n_layers": 4,
+    "iterations": 5
+  },
+  "hardware": {
+    "device": "cpu",
+    "device_name": "AMD64 Family 23 Model 104 Stepping 1, AuthenticAMD",
+    "torch": "2.13.0+cpu",
+    "platform": "Windows-11-10.0.26200-SP0"
+  },
+  "exponents": {
+    "convlstm": {
+      "latency": 0.7884430973801733,
+      "gflops": 0.8401687231363719
+    },
+    "mamba": {
+      "latency": 0.8322108372804178,
+      "gflops": 0.8379064024852738
+    },
+    "s4d": {
+      "latency": 0.6937631157379804,
+      "gflops": 0.8339932627798852
+    },
+    "transformer": {
+      "latency": 0.6132493313115921,
+      "gflops": 0.6329376240289978
+    }
+  },
+  "rows": [
+    {
+      "backbone": "convlstm",
+      "history": 2,
+      "gflops_per_sample": 0.906887168,
+      "latency_ms": 19.046699999307748
+    },
+    {
+      "backbone": "convlstm",
+      "history": 4,
+      "gflops_per_sample": 1.46079744,
+      "latency_ms": 24.87699999619508
+    },
+    {
+      "backbone": "convlstm",
+      "history": 8,
+      "gflops_per_sample": 2.568617984,
+      "latency_ms": 53.72399999760091
+    },
+    {
+      "backbone": "convlstm",
+      "history": 16,
+      "gflops_per_sample": 4.784259072,
+      "latency_ms": 93.69700000388548
+    },
+    {
+      "backbone": "convlstm",
+      "history": 32,
+      "gflops_per_sample": 9.215541248,
+      "latency_ms": 150.86239999800455
+    },
+    {
+      "backbone": "mamba",
+      "history": 2,
+      "gflops_per_sample": 0.813432832,
+      "latency_ms": 82.10509999480564
+    },
+    {
+      "backbone": "mamba",
+      "history": 4,
+      "gflops_per_sample": 1.30678784,
+      "latency_ms": 117.52580000029411
+    },
+    {
+      "backbone": "mamba",
+      "history": 8,
+      "gflops_per_sample": 2.293497856,
+      "latency_ms": 200.79660000192234
+    },
+    {
+      "backbone": "mamba",
+      "history": 16,
+      "gflops_per_sample": 4.266917888,
+      "latency_ms": 382.83640000008745
+    },
+    {
+      "backbone": "mamba",
+      "history": 32,
+      "gflops_per_sample": 8.213757952,
+      "latency_ms": 813.8273000004119
+    },
+    {
+      "backbone": "s4d",
+      "history": 2,
+      "gflops_per_sample": 0.725168128,
+      "latency_ms": 22.25429999816697
+    },
+    {
+      "backbone": "s4d",
+      "history": 4,
+      "gflops_per_sample": 1.15968,
+      "latency_ms": 30.008099995029625
+    },
+    {
+      "backbone": "s4d",
+      "history": 8,
+      "gflops_per_sample": 2.028703744,
+      "latency_ms": 38.86680000141496
+    },
+    {
+      "backbone": "s4d",
+      "history": 16,
+      "gflops_per_sample": 3.766751232,
+      "latency_ms": 74.5634000049904
+    },
+    {
+      "backbone": "s4d",
+      "history": 32,
+      "gflops_per_sample": 7.242846208,
+      "latency_ms": 156.31040000153007
+    },
+    {
+      "backbone": "transformer",
+      "history": 2,
+      "gflops_per_sample": 0.267124736,
+      "latency_ms": 16.401000000769272
+    },
+    {
+      "backbone": "transformer",
+      "history": 4,
+      "gflops_per_sample": 0.351535104,
+      "latency_ms": 17.731300002196804
+    },
+    {
+      "backbone": "transformer",
+      "history": 8,
+      "gflops_per_sample": 0.52035584,
+      "latency_ms": 27.820200004498474
+    },
+    {
+      "backbone": "transformer",
+      "history": 16,
+      "gflops_per_sample": 0.857997312,
+      "latency_ms": 39.961499998753425
+    },
+    {
+      "backbone": "transformer",
+      "history": 32,
+      "gflops_per_sample": 1.533280256,
+      "latency_ms": 91.5065000008326
+    }
+  ]
+}

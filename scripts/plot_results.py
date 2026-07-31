@@ -103,7 +103,10 @@ def _series(rows: list[dict[str, Any]], backbone: str, key: str) -> tuple[list[f
 
 
 def _draw_endpoint_labels(
-    axis: Any, endpoints: list[tuple[float, str, str]], ink: dict[str, str]
+    axis: Any,
+    endpoints: list[tuple[float, str, str]],
+    ink: dict[str, str],
+    anchor_x: float = 20.0,
 ) -> None:
     """Direct-label each series at its right-hand end, without overlaps.
 
@@ -116,6 +119,7 @@ def _draw_endpoint_labels(
         axis: Target axes.
         endpoints: ``(y_value, label, colour)`` per series.
         ink: Ink tokens for the current mode.
+        anchor_x: Data-space x where every series ends.
     """
     if not endpoints:
         return
@@ -130,7 +134,6 @@ def _draw_endpoint_labels(
         positions[index] = max(positions[index], positions[index - 1] + minimum_gap)
 
     inverse = axis.transData.inverted()
-    anchor_x = 20.0  # the largest tier, where every series ends
 
     for (value, label, _colour), display_y in zip(ordered, positions, strict=True):
         _, data_y = inverse.transform((0.0, display_y))
@@ -253,6 +256,116 @@ def render(record: dict[str, Any], mode: str, destination: Path) -> Path:
     return destination
 
 
+def render_mixing(record: dict[str, Any], mode: str, destination: Path) -> Path:
+    """Render the isolated temporal-mixing cost against sequence length.
+
+    Args:
+        record: A ``--sweep mixing`` benchmark record.
+        mode: ``"light"`` or ``"dark"``.
+        destination: Output PNG path.
+
+    Returns:
+        The path written.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import FixedLocator, FuncFormatter, NullLocator
+
+    ink = _style(mode)
+    colours = PALETTE[mode]
+    rows = record["rows"]
+    lengths = sorted({row["history"] for row in rows})
+
+    fig, axis = plt.subplots(figsize=(7.6, 4.8), facecolor=ink["surface"])
+    axis.set_facecolor(ink["surface"])
+    endpoints: list[tuple[float, str, str]] = []
+
+    for backbone in ORDER:
+        picked = sorted(
+            (row for row in rows if row["backbone"] == backbone),
+            key=lambda row: row["history"],
+        )
+        if not picked:
+            continue
+        x = [row["history"] for row in picked]
+        y = [row["latency_ms"] for row in picked]
+        is_ssm = backbone in {"s4d", "mamba"}
+        exponent = record["exponents"][backbone]["latency"]
+        label = f"{LABEL[backbone]}  k={exponent:.2f}"
+        axis.plot(
+            x,
+            y,
+            marker="o",
+            markersize=5.5,
+            linewidth=2.0,
+            color=colours[backbone],
+            linestyle="-" if is_ssm else "--",
+            zorder=3,
+            markeredgecolor=ink["surface"],
+            markeredgewidth=1.5,
+        )
+        endpoints.append((y[-1], label, colours[backbone]))
+
+    axis.set_xscale("log")
+    axis.set_yscale("log")
+    axis.xaxis.set_major_locator(FixedLocator(lengths))
+    axis.xaxis.set_minor_locator(NullLocator())
+    axis.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+    axis.yaxis.set_major_locator(FixedLocator([10, 30, 100, 300, 1000]))
+    axis.yaxis.set_minor_locator(NullLocator())
+    axis.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+
+    axis.set_xlabel("sequence length T", color=ink["secondary"], fontsize=9)
+    axis.set_ylabel("milliseconds per forward pass", color=ink["secondary"], fontsize=9)
+    axis.grid(True, which="major", color=ink["grid"], linewidth=0.6, alpha=0.9, zorder=0)
+    axis.set_axisbelow(True)
+    for spine in ("top", "right"):
+        axis.spines[spine].set_visible(False)
+    for spine in ("left", "bottom"):
+        axis.spines[spine].set_color(ink["grid"])
+    axis.tick_params(colors=ink["secondary"], labelsize=8.5)
+    axis.set_xlim(lengths[0] * 0.85, lengths[-1] * 4.2)
+
+    # This figure's labels sit at T = max, unlike the tier figure.
+    _draw_endpoint_labels(axis, endpoints, ink, anchor_x=float(lengths[-1]))
+
+    # Mark where this project's sequences actually live.
+    axis.axvline(8, color=ink["secondary"], linewidth=1.0, linestyle=":", alpha=0.7, zorder=1)
+    axis.annotate(
+        "TinyEarth: T <= 8",
+        xy=(8.5, axis.get_ylim()[0] * 1.35),
+        color=ink["secondary"],
+        fontsize=8,
+        ha="left",
+    )
+
+    fig.suptitle(
+        "Temporal mixing in isolation - S4D beats attention at every T, and the gap widens",
+        color=ink["primary"],
+        fontsize=11.5,
+        x=0.012,
+        ha="left",
+        y=0.975,
+    )
+    fig.text(
+        0.012,
+        0.005,
+        "Backbone only, encoder/decoder excluded. hidden=128, 2 layers, 8x8 latent grid, "
+        f"{record['hardware']['device']}.  k = fitted exponent of latency ~ T^k.",
+        color=ink["secondary"],
+        fontsize=7.5,
+        ha="left",
+    )
+
+    fig.tight_layout(rect=(0, 0.04, 1, 0.935))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(destination, dpi=170, facecolor=ink["surface"])
+    plt.close(fig)
+    return destination
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point.
 
@@ -283,8 +396,19 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = args.output_dir or (project_root() / "docs" / "figures")
 
     for mode in ("light", "dark"):
-        path = render(record, mode, output_dir / f"efficiency-{mode}.png")
-        logger.info("wrote %s", path)
+        logger.info("wrote %s", render(record, mode, output_dir / f"efficiency-{mode}.png"))
+
+    mixing_source = source.with_name("scaling_mixing.json")
+    if mixing_source.is_file():
+        mixing = json.loads(mixing_source.read_text(encoding="utf-8"))
+        for mode in ("light", "dark"):
+            logger.info("wrote %s", render_mixing(mixing, mode, output_dir / f"mixing-{mode}.png"))
+    else:
+        logger.info(
+            "no mixing sweep at %s; generate with "
+            "`python scripts/benchmark_scaling.py --sweep mixing`",
+            mixing_source,
+        )
     return 0
 
 

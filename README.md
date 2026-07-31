@@ -26,33 +26,64 @@ tinyearth-train +experiment=ssm_smoke      # trains end to end in seconds, no da
 
 ## Findings
 
+All measured on CPU, dataset-free, reproducible via `scripts/benchmark_efficiency.py` and
+`scripts/benchmark_scaling.py`. These are **cost** results; see [Status](#status) for what is
+not yet established.
+
+### 1. In isolation, S4D's temporal mixing beats attention at every sequence length
+
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/efficiency-dark.png">
-  <img alt="Compute and latency against parameter count for four temporal backbones at matched budgets. The SSMs sit well above the transformer on both axes." src="docs/figures/efficiency-light.png">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/mixing-dark.png">
+  <img alt="Latency of the temporal backbone alone against sequence length. S4D is the cheapest at every T, with the gap over the transformer widening from 1.2x to 1.9x." src="docs/figures/mixing-light.png">
 </picture>
 
-**1. Parameter efficiency is not FLOP efficiency — and here they point opposite ways.**
+Measuring the backbone **alone** — the whole point of holding the encoder and decoder fixed —
+S4D is the cheapest mixer at every `T`, and the gap over attention widens from **1.2× at
+T=8 to 1.9× at T=512**. Fitted latency exponents: S4D `k=0.94`, ConvLSTM `0.98`, Mamba
+`1.02`, transformer `1.04`.
+
+Two things worth noticing:
+
+- **Nothing here is quadratic**, not even attention. At `hidden_dim=128` the feed-forward
+  term dominates until roughly `T ≈ 4H`; the transformer's FLOPs double at 1.98× per
+  doubling of `T` even at 512. The quadratic term shows up first in *wall-clock*
+  (2.85× on the last doubling, against S4D's 1.97×) as the attention matrix goes
+  memory-bound — before it ever shows up in the FLOP count.
+- **Mamba is not in the winning group.** It is an SSM and it is 3× slower than S4D.
+  Selectivity without a fused kernel costs more than the architecture class buys.
+
+### 2. But at matched parameters the *whole model* flips the ranking
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/efficiency-dark.png">
+  <img alt="Compute and latency against parameter count for four backbones at matched budgets. The SSMs sit above the transformer on both axes." src="docs/figures/efficiency-light.png">
+</picture>
+
 A diagonal SSM's temporal mixing costs `~4HN` parameters against attention's `~4H²`, so at a
 2M budget it affords `hidden_dim=272` where the transformer gets 128. But FLOPs scale with
-*width squared* in the channel-mixing layers every architecture shares. The SSM spends its
-parameter saving on width and pays for that width in compute: **2.8× the FLOPs and 1.4× the
-latency of the transformer at the same parameter count.** The transformer is cheapest on
-both axes, at every tier.
+*width squared* in the channel-mixing layers **every** architecture shares. The SSM spends
+its parameter saving on width and pays for that width everywhere else: **2.8× the FLOPs and
+1.4× the latency** of the transformer at the same parameter count.
 
-**2. The asymptotic argument for SSMs does not apply at this problem's sequence lengths.**
-`O(T)` versus `O(T²)` is 8 operations against 64 at `T=8`. Earth observation minicubes are
-short by nature, so the usual headline reason to reach for an SSM is simply absent here.
-Any speed difference measured is constant factors, not complexity class.
+So the cheaper mixer loses the full-model comparison. **Parameter efficiency and compute
+efficiency are different questions, and here they have opposite answers** — which means
+"how small can an SSM be?" does too.
 
-**3. Selectivity is expensive without a fused kernel.** Mamba's input-dependent dynamics make
-the system time-varying, so it cannot be one convolution — and the sequential scan costs
-**6–8× S4D's latency** at every tier. Building the discretised coefficients per step instead
-of materialising `[B, L, C, N]` tensors recovered ~30%, but the Python-level loop remains the
-bottleneck. This is precisely what Mamba's fused CUDA kernel exists to avoid.
+### 3. The SSM's state dimension is cheap in parameters and expensive in compute
 
-> These are **cost** measurements — real, reproducible (`scripts/benchmark_efficiency.py`),
-> and independent of any dataset. **No forecast-quality result exists yet**; see
-> [Status](#status).
+`state_dim` is the SSM's own capacity axis, with no ConvLSTM or transformer counterpart.
+Growing S4D's state 8→256 (32×) adds only **+1.08M parameters**; reaching the same parameter
+increase through width takes just 128→256. But per parameter added, state costs **~4× more
+latency than width** (S4D), and **~40× more** for Mamba, whose scan is `O(N)` per step.
+
+The same theme a third time: the two ledgers disagree. `state_dim` is the cheap axis only if
+you are counting parameters.
+
+> **Caveat that governs all of this:** TinyEarth's sequences top out at `T=8`, marked on the
+> figure. Every architecture is firmly in its linear regime there, and the asymptotic
+> argument for SSMs — the usual headline reason to reach for one — is simply absent. Earth
+> observation minicubes are short by nature, which may make this an unfavourable setting for
+> the architecture. Establishing that is a legitimate result.
 
 ---
 
@@ -155,8 +186,10 @@ tinyearth-model  --compare                  # size and cost of every backbone, n
 tinyearth-data   +experiment=data_smoke     # build the data pipeline and report on it
 tinyearth-info                              # environment and hardware report
 
-python scripts/benchmark_efficiency.py      # reproduce the figure above
-python scripts/plot_results.py
+python scripts/benchmark_efficiency.py            # cost at matched budgets
+python scripts/benchmark_scaling.py --sweep mixing   # cost against sequence length
+python scripts/benchmark_scaling.py --sweep state    # cost against SSM state size
+python scripts/plot_results.py                       # render the figures above
 
 pytest                                      # 809 tests, ~3 min
 pytest -m "not slow"                        # 784 tests, ~28 s

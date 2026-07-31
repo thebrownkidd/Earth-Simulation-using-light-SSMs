@@ -1,0 +1,214 @@
+{
+  "generated": "2026-07-31T22:05:00+00:00",
+  "sweep": "state",
+  "setup": {
+    "tier": "tiny",
+    "image_size": 32,
+    "horizon": 1,
+    "batch_size": 2,
+    "latent_dim": 128,
+    "n_layers": 4,
+    "iterations": 5
+  },
+  "hardware": {
+    "device": "cpu",
+    "device_name": "AMD64 Family 23 Model 104 Stepping 1, AuthenticAMD",
+    "torch": "2.13.0+cpu",
+    "platform": "Windows-11-10.0.26200-SP0"
+  },
+  "exponents": {},
+  "rows": [
+    {
+      "backbone": "s4d",
+      "axis": "state_dim",
+      "value": 8,
+      "hidden_dim": 272,
+      "parameters": 1833204,
+      "latency_ms": 24.75649999541929
+    },
+    {
+      "backbone": "s4d",
+      "axis": "state_dim",
+      "value": 16,
+      "hidden_dim": 272,
+      "parameters": 1868020,
+      "latency_ms": 30.655999995360617
+    },
+    {
+      "backbone": "s4d",
+      "axis": "state_dim",
+      "value": 32,
+      "hidden_dim": 272,
+      "parameters": 1937652,
+      "latency_ms": 28.471600002376363
+    },
+    {
+      "backbone": "s4d",
+      "axis": "state_dim",
+      "value": 64,
+      "hidden_dim": 272,
+      "parameters": 2076916,
+      "latency_ms": 29.388000002654735
+    },
+    {
+      "backbone": "s4d",
+      "axis": "state_dim",
+      "value": 128,
+      "hidden_dim": 272,
+      "parameters": 2355444,
+      "latency_ms": 30.48349999880884
+    },
+    {
+      "backbone": "s4d",
+      "axis": "state_dim",
+      "value": 256,
+      "hidden_dim": 272,
+      "parameters": 2912500,
+      "latency_ms": 44.91570000391221
+    },
+    {
+      "backbone": "mamba",
+      "axis": "state_dim",
+      "value": 8,
+      "hidden_dim": 256,
+      "parameters": 2007108,
+      "latency_ms": 72.25179999659304
+    },
+    {
+      "backbone": "mamba",
+      "axis": "state_dim",
+      "value": 16,
+      "hidden_dim": 256,
+      "parameters": 2056260,
+      "latency_ms": 123.84500000189291
+    },
+    {
+      "backbone": "mamba",
+      "axis": "state_dim",
+      "value": 32,
+      "hidden_dim": 256,
+      "parameters": 2154564,
+      "latency_ms": 241.2324999968405
+    },
+    {
+      "backbone": "mamba",
+      "axis": "state_dim",
+      "value": 64,
+      "hidden_dim": 256,
+      "parameters": 2351172,
+      "latency_ms": 449.8094000009587
+    },
+    {
+      "backbone": "mamba",
+      "axis": "state_dim",
+      "value": 128,
+      "hidden_dim": 256,
+      "parameters": 2744388,
+      "latency_ms": 832.7274000039324
+    },
+    {
+      "backbone": "mamba",
+      "axis": "state_dim",
+      "value": 256,
+      "hidden_dim": 256,
+      "parameters": 3530820,
+      "latency_ms": 1692.1883999966667
+    },
+    {
+      "backbone": "s4d",
+      "axis": "hidden_dim",
+      "value": 128,
+      "hidden_dim": 128,
+      "parameters": 729796,
+      "latency_ms": 21.744700003182516
+    },
+    {
+      "backbone": "s4d",
+      "axis": "hidden_dim",
+      "value": 176,
+      "hidden_dim": 176,
+      "parameters": 1086676,
+      "latency_ms": 20.801599996048026
+    },
+    {
+      "backbone": "s4d",
+      "axis": "hidden_dim",
+      "value": 256,
+      "hidden_dim": 256,
+      "parameters": 1886276,
+      "latency_ms": 26.512199998251162
+    },
+    {
+      "backbone": "s4d",
+      "axis": "hidden_dim",
+      "value": 368,
+      "hidden_dim": 368,
+      "parameters": 3435796,
+      "latency_ms": 37.014400004409254
+    },
+    {
+      "backbone": "s4d",
+      "axis": "hidden_dim",
+      "value": 512,
+      "hidden_dim": 512,
+      "parameters": 6165316,
+      "latency_ms": 59.45210000209045
+    },
+    {
+      "backbone": "s4d",
+      "axis": "hidden_dim",
+      "value": 736,
+      "hidden_dim": 736,
+      "parameters": 12059876,
+      "latency_ms": 92.37859999848297
+    },
+    {
+      "backbone": "mamba",
+      "axis": "hidden_dim",
+      "value": 128,
+      "hidden_dim": 128,
+      "parameters": 732868,
+      "latency_ms": 49.23330000019632
+    },
+    {
+      "backbone": "mamba",
+      "axis": "hidden_dim",
+      "value": 176,
+      "hidden_dim": 176,
+      "parameters": 1133140,
+      "latency_ms": 68.41310000163503
+    },
+    {
+      "backbone": "mamba",
+      "axis": "hidden_dim",
+      "value": 256,
+      "hidden_dim": 256,
+      "parameters": 2056260,
+      "latency_ms": 112.20699999830686
+    },
+    {
+      "backbone": "mamba",
+      "axis": "hidden_dim",
+      "value": 368,
+      "hidden_dim": 368,
+      "parameters": 3886228,
+      "latency_ms": 182.3344999938854
+    },
+    {
+      "backbone": "mamba",
+      "axis": "hidden_dim",
+      "value": 512,
+      "hidden_dim": 512,
+      "parameters": 7160644,
+      "latency_ms": 274.3400000035763
+    },
+    {
+      "backbone": "mamba",
+      "axis": "hidden_dim",
+      "value": 736,
+      "hidden_dim": 736,
+      "parameters": 14314980,
+      "latency_ms": 577.1620000014082
+    }
+  ]
+}
