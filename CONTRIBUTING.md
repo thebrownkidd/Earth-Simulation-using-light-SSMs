@@ -19,16 +19,16 @@ Four commands. All four must pass before anything is merged, and before a phase 
 declared complete.
 
 ```bash
-black src tests          # format
-ruff check src tests     # lint
-mypy                     # type check (strict)
-pytest                   # test
+black src tests scripts        # format
+ruff check src tests scripts   # lint
+mypy                           # type check (strict)
+pytest                         # test
 ```
 
 `pre-commit install` wires these to run on commit.
 
-For a fast inner loop, `pytest -m "not slow"` skips the subprocess CLI tests (~8s instead
-of ~70s). Run the full suite before pushing.
+For a fast inner loop, `pytest -m "not slow"` skips the subprocess CLI and notebook tests
+(~15s instead of ~85s). Run the full suite before pushing.
 
 ### Formatting
 
@@ -133,6 +133,24 @@ An experiment that cannot state what result would *disconfirm* it is not ready t
 
 **Never commit data, and never redistribute a dataset.** `data/` is git-ignored. Provide
 download scripts and instructions instead.
+
+Every dataset yields the contract in `tinyearth.datasets.types`. Adding a data source means
+writing a reader, not changing the pipeline — see [`docs/datasets.md`](docs/datasets.md).
+
+Tests run against **synthetic cubes written in the real on-disk format**, so they exercise
+the production reader rather than a parallel implementation that could drift away from it.
+When adding a format detail, add it to `minicube.py` and cover it there.
+
+Two conventions are load-bearing and must not be changed casually:
+
+- **`cldmsk == 1` means cloudy**; validity is `1 - cldmsk`. Inverting this trains the model
+  exclusively on cloud, silently — losses still fall.
+- **Statistics come from the training split only**, with masked pixels excluded.
+
+## Notebooks
+
+`tests/test_notebooks.py` executes every notebook under `notebooks/`, so a broken example
+fails the suite. Clear outputs before committing; the test enforces this.
 
 ## Commits
 
