@@ -21,6 +21,10 @@ image encoder  ->  temporal backbone  ->  decoder  ->  forecast
                    the only thing that varies
 ```
 
+Swapping it is one config override; the encoder and decoder keep byte-identical parameter
+counts, which is what makes a difference in results attributable. See
+[`docs/models.md`](docs/models.md).
+
 ---
 
 ## Status
@@ -29,13 +33,20 @@ image encoder  ->  temporal backbone  ->  decoder  ->  forecast
 | --- | --- | --- |
 | **1** | Repository scaffold, config system, tooling, utilities | **Complete** |
 | **2** | EarthNet2021 dataset pipeline | **Complete** |
-| 3 | ConvLSTM and temporal-transformer baselines, training loop, metrics | Not started |
+| **3** | ConvLSTM and temporal-transformer baselines, training loop, metrics | **Complete** |
 | 4 | Tiny State Space Model backbones, scaling study | Not started |
 
-Phases 1–2 deliver a runnable, tested, type-checked scaffold and a full data pipeline.
-There is **no model yet** — that is by design. The default dataset is synthetic, so
-everything runs without the ~100 GB EarthNet2021 download.
-See [`docs/phase-1.md`](docs/phase-1.md) and [`docs/phase-2.md`](docs/phase-2.md).
+Phases 1–3 deliver the scaffold, the data pipeline, two reproducible baselines, a training
+loop, and the full metric suite. The default dataset is synthetic, so **everything runs
+without the ~100 GB EarthNet2021 download**:
+
+```bash
+tinyearth-train +experiment=baseline_smoke     # trains end to end in seconds
+```
+
+The State Space Models the project is actually about arrive in Phase 4.
+See [`docs/phase-1.md`](docs/phase-1.md), [`docs/phase-2.md`](docs/phase-2.md) and
+[`docs/phase-3.md`](docs/phase-3.md).
 
 ---
 
@@ -66,11 +77,12 @@ pip install -e ".[dev]" --extra-index-url https://download.pytorch.org/whl/cpu
 ### Verify the install
 
 ```bash
-tinyearth-info                          # environment and hardware report
-tinyearth-config +experiment=smoke      # compose and validate a config end to end
-tinyearth-data   +experiment=data_smoke # build the data pipeline and report on it
-pytest                                  # 430 tests
-pytest -m "not slow"                    # ~15s, skips subprocess and notebook tests
+tinyearth-info                              # environment and hardware report
+tinyearth-config +experiment=smoke          # compose and validate a config
+tinyearth-data   +experiment=data_smoke     # build the data pipeline and report
+tinyearth-train  +experiment=baseline_smoke # train end to end
+pytest                                      # 687 tests
+pytest -m "not slow"                        # ~30s, skips subprocess and notebook tests
 ```
 
 ---
@@ -96,6 +108,14 @@ tinyearth-config --dry-run
 tinyearth-data                                   # synthetic (default, no download)
 tinyearth-data data=earthnet2021                 # the real dataset
 tinyearth-data data.history_length=8 data.horizon=4
+
+# training -- swapping the backbone is a single override, nothing else changes
+tinyearth-train model=convlstm
+tinyearth-train model=transformer
+tinyearth-train model.backbone.kwargs.hidden_dim=256 training.epochs=50
+
+# model size and cost, without training
+tinyearth-model --compare
 ```
 
 Each run writes to `outputs/<run.group>/<run.name>/`:
@@ -117,17 +137,21 @@ configs/                 Hydra configuration tree
 ├── config.yaml          root config; composes the structured schema
 ├── experiment/          complete named experiments
 ├── data/                synthetic (default) and earthnet2021
-└── model|training/      populated in Phases 3-4
+├── model/               convlstm and transformer baselines
+└── training/            optimiser, schedule, checkpointing, metrics
 
 src/tinyearth/
 ├── bootstrap.py         shared run initialisation for every entry point
 ├── config/              structured schemas, ConfigStore registration, resolution
 ├── utils/               determinism, logging, devices, paths, registry
 ├── datasets/            EarthNet2021 pipeline, windowing, masking, splits
-├── models/              Phase 3-4
-│   ├── encoders/  temporal/  decoders/  losses/
-├── training/            Phase 3
-├── evaluation/          Phase 3
+├── models/              base interfaces, forecaster, factory
+│   ├── encoders/        CNN encoder (held fixed)
+│   ├── temporal/        THE COMPONENT UNDER STUDY: convlstm, transformer
+│   ├── decoders/        CNN decoder (held fixed)
+│   └── losses/          L1, L2, Charbonnier; registry-backed
+├── training/            trainer, optimiser, schedules, metric tracking
+├── evaluation/          forecast-quality and efficiency metrics
 └── cli/                 console entry points
 
 docs/                    design notes and per-phase documentation
@@ -151,8 +175,11 @@ edited constantly and should not be buried in a wheel. See
 | [`docs/configuration.md`](docs/configuration.md) | How the Hydra config system works |
 | [`docs/reproducibility.md`](docs/reproducibility.md) | Seeding, determinism, and its cost |
 | [`docs/datasets.md`](docs/datasets.md) | Dataset format, splits, masking, normalisation |
+| [`docs/models.md`](docs/models.md) | Architecture, baselines, measured parameter counts |
+| [`docs/evaluation.md`](docs/evaluation.md) | Metrics and how they are measured |
 | [`docs/phase-1.md`](docs/phase-1.md) | What Phase 1 delivers and how to verify it |
 | [`docs/phase-2.md`](docs/phase-2.md) | What Phase 2 delivers and how to verify it |
+| [`docs/phase-3.md`](docs/phase-3.md) | What Phase 3 delivers and how to verify it |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Development workflow and coding standards |
 
 ---

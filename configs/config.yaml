@@ -4,17 +4,25 @@
 # that every group loaded afterwards is validated against it; `_self_` comes
 # last so that values written in *this* file win over the groups.
 #
-# Phase 2 status: `data` defaults to the synthetic dataset so that every
-# command runs out of the box without the ~100 GB EarthNet2021 download.
-# Select the real data with `data=earthnet2021`. The `model` and `training`
-# groups are still absent; Phases 3-4 add them below.
+# Phase 3 status: every group now has a default, so `tinyearth-train` runs out
+# of the box without the ~100 GB EarthNet2021 download. Select the real data
+# with `data=earthnet2021`, and swap the component under study with
+# `model=transformer`. Phase 4 adds the State Space Model configs.
 
 defaults:
   - tinyearth_schema
   - data: synthetic
+  - model: convlstm
+  - training: default
   - _self_
-  - override hydra/job_logging: disabled
-  - override hydra/hydra_logging: disabled
+  # `none`, not `disabled`. Both stop Hydra configuring handlers, but Hydra's
+  # `disabled` profile sets `disable_existing_loggers: true`, which silently
+  # switches off every logger that already exists -- meaning every module-level
+  # `get_logger(__name__)` created at import time. Library warnings then vanish
+  # from both console and file with no error. `none` sets it to false.
+  # `setup_logging` re-enables the hierarchy defensively as well.
+  - override hydra/job_logging: none
+  - override hydra/hydra_logging: none
 
 run:
   name: default

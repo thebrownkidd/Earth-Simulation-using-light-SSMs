@@ -58,11 +58,57 @@ def test_data_group_composes_by_default(compose_config):
     assert cfg.data.history_length == 4
 
 
-def test_remaining_phase_placeholders_are_empty(compose_config):
-    """`model` and `training` stay untyped until Phases 3 and 4 define them."""
+def test_model_and_training_groups_compose_by_default(compose_config):
+    """Phase 3: every group now has a default, so `tinyearth-train` runs bare."""
     cfg = compose_config()
-    assert cfg.model is None
-    assert cfg.training is None
+    assert cfg.model is not None
+    assert cfg.model.backbone.name == "convlstm"
+    assert cfg.training is not None
+    assert cfg.training.epochs > 0
+
+
+def test_model_group_is_typed_and_validated(compose_config):
+    typed = to_dataclass(compose_config())
+    assert typed.model is not None
+    assert typed.model.loss.terms == {"l1": 1.0}
+    assert typed.training is not None
+    assert typed.training.evaluation.efficiency is True
+
+
+def test_backbone_can_be_swapped_by_name(compose_config):
+    """The central claim: changing the component under study is a config edit."""
+    convlstm = compose_config()
+    transformer = compose_config(["model=transformer"])
+
+    assert convlstm.model.backbone.name == "convlstm"
+    assert transformer.model.backbone.name == "transformer"
+    # The fixed components must be untouched by the swap.
+    assert convlstm.model.encoder == transformer.model.encoder
+    assert convlstm.model.decoder == transformer.model.decoder
+
+
+def test_backbone_kwargs_stay_untyped_on_purpose(compose_config):
+    """The one deliberate escape hatch: backbone-specific arguments."""
+    cfg = compose_config(["model=transformer"])
+    assert cfg.model.backbone.kwargs.n_heads == 4
+
+
+def test_training_overrides_apply(compose_config):
+    cfg = compose_config(["training.epochs=3", "training.optimizer.lr=0.01"])
+    assert cfg.training.epochs == 3
+    assert cfg.training.optimizer.lr == pytest.approx(0.01)
+
+
+def test_training_group_rejects_a_wrong_type(compose_config):
+    with pytest.raises(ConfigCompositionException, match=re.escape("training.epochs")):
+        compose_config(["training.epochs=many"])
+
+
+def test_baseline_smoke_experiment_composes(compose_config):
+    cfg = compose_config(["+experiment=baseline_smoke"])
+    assert cfg.run.name == "phase3"
+    assert cfg.training.max_steps_per_epoch == 4
+    assert cfg.data.horizon == 2
 
 
 def test_data_group_is_typed_and_validated(compose_config):

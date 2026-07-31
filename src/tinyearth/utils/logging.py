@@ -27,6 +27,27 @@ _ROOT_LOGGER_NAME = "tinyearth"
 _NOISY_LIBRARIES = ("matplotlib", "PIL", "fsspec", "urllib3")
 
 
+def _reenable_hierarchy() -> None:
+    """Undo any ``disable_existing_loggers`` that silenced our loggers.
+
+    :func:`logging.config.dictConfig` defaults to ``disable_existing_loggers:
+    True``, which switches off every logger that already exists. Module-level
+    ``get_logger(__name__)`` calls run at *import* time, so they are always
+    already present when a framework configures logging later -- Hydra's
+    ``job_logging: disabled`` profile does exactly this.
+
+    The failure mode is nasty: no error, no warning, and every library log line
+    silently absent from both console and file. Re-enabling here means
+    :func:`setup_logging` produces working logging regardless of what else has
+    touched the logging system first.
+    """
+    for name, logger in logging.Logger.manager.loggerDict.items():
+        if isinstance(logger, logging.Logger) and (
+            name == _ROOT_LOGGER_NAME or name.startswith(f"{_ROOT_LOGGER_NAME}.")
+        ):
+            logger.disabled = False
+
+
 def setup_logging(
     level: int | str = logging.INFO,
     *,
@@ -56,6 +77,7 @@ def setup_logging(
         The configured ``tinyearth`` logger.
     """
     logger = logging.getLogger(_ROOT_LOGGER_NAME)
+    _reenable_hierarchy()
 
     if logger.handlers and not force:
         return logger

@@ -19,6 +19,8 @@ SUBPACKAGES = [
     "tinyearth.cli.info",
     "tinyearth.cli.inspect_config",
     "tinyearth.cli.inspect_data",
+    "tinyearth.cli.inspect_model",
+    "tinyearth.cli.train",
     "tinyearth.config",
     "tinyearth.config.resolution",
     "tinyearth.config.schema",
@@ -35,12 +37,21 @@ SUBPACKAGES = [
     "tinyearth.datasets.types",
     "tinyearth.datasets.windows",
     "tinyearth.evaluation",
+    "tinyearth.evaluation.efficiency",
+    "tinyearth.evaluation.metrics",
     "tinyearth.models",
+    "tinyearth.models.base",
     "tinyearth.models.decoders",
     "tinyearth.models.encoders",
+    "tinyearth.models.factory",
+    "tinyearth.models.forecaster",
+    "tinyearth.models.layers",
     "tinyearth.models.losses",
     "tinyearth.models.temporal",
     "tinyearth.training",
+    "tinyearth.training.optim",
+    "tinyearth.training.tracking",
+    "tinyearth.training.trainer",
     "tinyearth.utils",
     "tinyearth.utils.device",
     "tinyearth.utils.logging",
@@ -98,6 +109,26 @@ def test_registered_datasets_are_discoverable():
     from tinyearth.datasets import DATASETS
 
     assert set(DATASETS.keys()) == {"earthnet2021", "synthetic"}
+
+
+def test_models_reexports_resolve():
+    import tinyearth.models as models
+
+    for name in models.__all__:
+        assert hasattr(models, name)
+
+
+def test_registered_backbones_are_discoverable():
+    """Configs select the component under study by name."""
+    from tinyearth.models import TEMPORAL_BACKBONES
+
+    assert set(TEMPORAL_BACKBONES.keys()) == {"convlstm", "transformer"}
+
+
+def test_registered_losses_are_discoverable():
+    from tinyearth.models import LOSSES
+
+    assert {"l1", "l2", "charbonnier"} <= set(LOSSES.keys())
 
 
 def test_info_report_renders():

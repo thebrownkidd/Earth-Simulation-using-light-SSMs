@@ -1,0 +1,19 @@
+# Minimal training run for verification, not for results.
+#
+# Two epochs, four steps each. Enough to prove the loop, the metrics, the
+# checkpoints and the efficiency profile all work end to end.
+
+defaults:
+  - default
+
+epochs: 2
+max_steps_per_epoch: 4
+log_every_n_steps: 1
+
+scheduler:
+  name: cosine
+  warmup_epochs: 0
+
+evaluation:
+  efficiency_warmup: 1
+  efficiency_iterations: 3
