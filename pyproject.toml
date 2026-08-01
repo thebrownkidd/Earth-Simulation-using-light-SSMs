@@ -138,7 +138,12 @@ known-first-party = ["tinyearth"]
 # stubs as well as to our own code. The 3.11 language floor is instead enforced
 # by ruff's `target-version = "py311"` (pyupgrade rules), and by the CI matrix.
 python_version = "3.12"
-files = ["src", "tests"]
+files = ["src", "tests", "scripts"]
+# `scripts/` is a directory of standalone entry points, not an installed
+# package, so imports of one from a test resolve only if mypy is told where to
+# look. tests/test_download_selection.py imports the tarball selector directly,
+# because a subset-selection bug there silently restricts a study to one region.
+mypy_path = "scripts"
 strict = true
 warn_unreachable = true
 show_error_codes = true
@@ -155,7 +160,7 @@ disallow_untyped_decorators = false
 
 [[tool.mypy.overrides]]
 # These ship without complete stubs.
-module = ["hydra.*", "omegaconf.*", "tensorboard.*", "wandb.*"]
+module = ["hydra.*", "omegaconf.*", "tensorboard.*", "wandb.*", "earthnet.*", "matplotlib.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------

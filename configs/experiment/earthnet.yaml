@@ -1,0 +1,151 @@
+# @package _global_
+#
+# Objective
+#   The project's central question, asked of real data: at a matched ~2M
+#   parameter budget, how does a State Space Model compare with a ConvLSTM and
+#   a temporal transformer at forecasting the Earth's surface?
+#
+#   Every earlier quality number in this repository came from synthetic cubes
+#   and meant nothing. This is the configuration that produces real ones.
+#
+# Configuration
+#   The official EarthNet2021 temporal protocol, unchanged: 10 context frames
+#   (50 days of Sentinel-2 at 5-day revisit) predicting the following 20 frames
+#   (100 days). The forecast is emitted in a single pass, not autoregressively.
+#
+#   Reduced spatially, and only spatially: training uses random 32x32 crops of
+#   the 128x128 minicubes. That choice is deliberate and it is the reason this
+#   experiment fits on a laptop CPU at all.
+#
+#     * Spatial extent is the dominant cost. A measured training step at
+#       128 px costs ~18x one at 32 px, tracking the 16x pixel ratio.
+#     * Spatial extent loads the encoder and decoder -- the components this
+#       project holds FIXED across every architecture. It does not load the
+#       temporal backbone, which is the component under study. So cropping buys
+#       a large amount of compute without touching the independent variable.
+#       Shortening the sequence would have been the opposite trade.
+#     * A random crop also augments: each cube is seen at a different offset
+#       each epoch. Validation crops centred, so its metric does not wander.
+#
+#   Nothing in the model is tied to the crop size -- the encoder and decoder
+#   are fully convolutional and the backbone folds the latent grid into the
+#   batch dimension -- so these checkpoints run unchanged on whole 128x128
+#   scenes. That is how the qualitative figures are made; see
+#   scripts/visualize_forecasts.py.
+#
+# Expected output
+#   One run directory per backbone under outputs/earthnet/, each with
+#   summary.json (val MAE/RMSE/PSNR/SSIM/SAM plus the efficiency block),
+#   metrics.jsonl, and best/last checkpoints. Collate with:
+#       python scripts/collate_results.py --group earthnet
+#
+# Interpretation
+#   Compare val/mae across backbones at equal params/total. Read latency beside
+#   it: at T=10 the SSM's asymptotic advantage does not apply, so any speed
+#   difference here is constant factors, not complexity class.
+#
+#   Honest limits, which belong in any reading of these numbers:
+#     * 32x32 crops cover 640 m, not the full 2.56 km scene.
+#     * A ~2M parameter model trained for a few hours on a CPU is not competing
+#       with the EarthNet2021 leaderboard, and no comparison to it is implied.
+#     * Metrics are reported on the held-out validation partition. No
+#       hyperparameter search was run, so the only selection pressure is the
+#       choice of best epoch.
+#
+# Usage
+#   python scripts/download_earthnet2021.py --splits train --max-tarballs 16
+#   tinyearth-train +experiment=earthnet model=s4d
+#   tinyearth-train +experiment=earthnet model=mamba
+#   tinyearth-train +experiment=earthnet model=convlstm
+#   tinyearth-train +experiment=earthnet model=transformer
+#
+#   Or all four in sequence, with figures, via:
+#       python scripts/run_earthnet_study.py
+
+defaults:
+  - override /data: earthnet2021
+  - override /model: s4d
+  - override /training: default
+
+run:
+  name: ${model.backbone.name}
+  group: earthnet
+  notes: "EarthNet2021, official 10->20 protocol, 32px crops, matched ~2M parameters."
+  tags: [earthnet, real-data, matched-parameters]
+
+seed:
+  value: 42
+  deterministic: true
+
+data:
+  # The official protocol. history + horizon == 30 == the frames in a training
+  # cube, so each cube yields exactly one window and `stride` cannot bind.
+  history_length: 10
+  horizon: 20
+  crop_size: 32
+
+  # EarthNet2021 is heavily clouded. Targets that are almost entirely masked
+  # carry no learnable signal but still cost a full forward pass, so they are
+  # skipped. Applied AFTER cropping, to the pixels actually predicted.
+  cloud_masking: true
+  mask_policy: zero
+  min_valid_fraction: 0.1
+
+  val_fraction: 0.1
+  loader:
+    batch_size: 8
+    num_workers: 4
+    persistent_workers: true
+    prefetch_factor: 2
+
+model:
+  # The smallest calibrated tier, ~2M parameters. Matched across all four
+  # backbones by construction: each tier fixes depth and solves for the width
+  # that hits the budget, so a quality difference is attributable to the
+  # architecture rather than to capacity.
+  #
+  # Both lines below are load-bearing, and the comparison is silently wrong
+  # without either:
+  #
+  #   hidden_dim: null  -- every model config ships a concrete default width,
+  #     and an explicit width beats `size`. Left in place, the tier is computed
+  #     and then discarded, and the four models train at 0.7M, 0.7M, 1.2M and
+  #     2.6M parameters while appearing to be matched.
+  #   n_layers: 4       -- the tiers are calibrated at this depth. The ConvLSTM
+  #     and transformer configs default to 2, which puts them at a different
+  #     budget than the width was solved for.
+  backbone:
+    size: tiny
+    kwargs:
+      hidden_dim: null
+      n_layers: 4
+
+training:
+  # Six epochs is a compute budget, not a convergence criterion, and it was set
+  # by the slowest model rather than chosen freely. Measured on the reference
+  # CPU: s4d 3.96, convlstm 5.61, transformer 4.89, mamba 0.65 samples/s. Mamba
+  # is ~6x slower than S4D because its selective scan is a sequential Python
+  # loop over T+K steps with no fused kernel, and its cost per sample is flat in
+  # batch size, so no batching trick recovers it. Six epochs is what fits Mamba
+  # into a single overnight run; the other three take about half an hour each.
+  #
+  # A pilot at this data scale had S4D essentially flat by epoch 3 (val MAE
+  # 0.082 -> 0.035 -> 0.032), so six is not as thin as it sounds -- but it is
+  # still a budget, and none of these models is trained to convergence.
+  #
+  # Every backbone gets the SAME number of epochs over the SAME data. That
+  # keeps the comparison controlled, and it is a real limit on what the quality
+  # numbers support -- stated here and in the README rather than left for a
+  # reader to discover.
+  epochs: 6
+  optimizer:
+    lr: 1.0e-3
+    weight_decay: 1.0e-4
+  scheduler:
+    name: cosine
+    warmup_epochs: 1
+  evaluation:
+    efficiency: true
+    data_range: 1.0
+  grad_clip: 1.0
+  log_every_n_steps: 25

@@ -236,6 +236,11 @@ class DataConfig:
         cache_size: Decoded cubes cached per worker. ``0`` disables.
         nan_is_invalid: Treat NaN imagery pixels as invalid.
         max_cubes: Cap on cubes read, for smoke tests. ``None`` reads all.
+        crop_size: Side of a square spatial crop, or ``None`` for whole scenes.
+            Training crops at a random origin and so also augments; other splits
+            crop centred. The dominant cost lever on CPU -- a step at 128 px
+            costs roughly 16x one at 32 px -- and it acts only on the encoder
+            and decoder, which are held fixed across the architectures compared.
         normalization: Imagery normalisation.
         loader: DataLoader settings.
         synthetic: Generation parameters for the synthetic dataset.
@@ -258,6 +263,7 @@ class DataConfig:
     cache_size: int = 4
     nan_is_invalid: bool = True
     max_cubes: int | None = None
+    crop_size: int | None = None
     normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
     loader: LoaderConfig = field(default_factory=LoaderConfig)
     synthetic: SyntheticConfig = field(default_factory=SyntheticConfig)

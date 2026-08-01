@@ -366,6 +366,195 @@ def render_mixing(record: dict[str, Any], mode: str, destination: Path) -> Path:
     return destination
 
 
+def render_quality(record: dict[str, Any], mode: str, destination: Path) -> Path:
+    """Render the EarthNet2021 forecast-quality figure.
+
+    Two panels, because two different questions are being asked:
+
+    *Left* -- error against lead time. The shape matters more than the level: a
+    model that has learned dynamics should separate from persistence as the
+    horizon grows, since persistence is nearly exact at short lead and decays
+    steadily. A learned curve that runs parallel to persistence has learned the
+    static scene and nothing else.
+
+    *Right* -- error against cost. This is the project's actual question, and it
+    is why the parameter-free references appear here as horizontal lines: they
+    cost nothing, so any model above the persistence line is worse than free.
+
+    Args:
+        record: The record written by ``scripts/evaluate_earthnet.py``.
+        mode: ``"light"`` or ``"dark"``.
+        destination: Output PNG path.
+
+    Returns:
+        The path written.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import FuncFormatter
+
+    ink = _style(mode)
+    colours = dict(PALETTE[mode])
+    colours.setdefault("persistence", "#8a8880")
+    colours.setdefault("climatology", "#b9b6ad" if mode == "light" else "#5f5e58")
+
+    results = record["results"]
+    setup = record["setup"]
+    parameters = record["parameters"]
+    revisit = setup.get("revisit_days", 5)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12.0, 4.8), facecolor=ink["surface"])
+    left, right = axes
+    for axis in axes:
+        axis.set_facecolor(ink["surface"])
+
+    # -- left: error against lead time -------------------------------------
+    for name in (*ORDER, "persistence", "climatology"):
+        entry = results.get(name)
+        if entry is None:
+            continue
+        curve = entry["mae_by_lead"]
+        days = [(index + 1) * revisit for index in range(len(curve))]
+        is_reference = name not in parameters
+        left.plot(
+            days,
+            curve,
+            color=colours[name],
+            linewidth=1.7 if is_reference else 2.1,
+            linestyle=":" if is_reference else ("-" if name in {"s4d", "mamba"} else "--"),
+            marker="" if is_reference else "o",
+            markersize=4,
+            markeredgecolor=ink["surface"],
+            markeredgewidth=1.0,
+            label=_display_name(name),
+            zorder=3,
+        )
+
+    left.set_xlabel("days ahead", color=ink["secondary"], fontsize=9)
+    left.set_ylabel("mean absolute error (reflectance)", color=ink["secondary"], fontsize=9)
+    left.set_title(
+        "Error grows with lead time", color=ink["primary"], fontsize=11, loc="left", pad=10
+    )
+    left.legend(frameon=False, fontsize=8.5, labelcolor=ink["secondary"], loc="upper left")
+
+    # -- right: error against cost -----------------------------------------
+    # Not against parameter count: the tiers put every model within 8% of 2M by
+    # construction, so that axis has no spread to show and its tick labels
+    # collapse to a row of identical "2.1M"s. What actually differs at a matched
+    # budget is what the budget *costs to run*, which is the project's question.
+    cost = record.get("cost", {})
+    plotted = [
+        (name, cost[name]["latency_ms"], results[name]["mae"])
+        for name in ORDER
+        if name in results and cost.get(name, {}).get("latency_ms") is not None
+    ]
+    plotted.sort(key=lambda item: item[1])
+
+    for rank, (name, latency, mae) in enumerate(plotted):
+        right.scatter(
+            latency,
+            mae,
+            s=120,
+            color=colours[name],
+            edgecolor=ink["surface"],
+            linewidth=1.5,
+            zorder=4,
+            marker="o" if name in {"s4d", "mamba"} else "s",
+        )
+        # Alternate left and right by latency rank. Two backbones can land
+        # within a few milliseconds of each other -- ConvLSTM and the
+        # transformer differ by 17 ms here -- while their labels are ~80 ms
+        # wide, so stacking them above and below is not enough separation
+        # either. Placing neighbours on opposite sides always is.
+        leftward = rank % 2 == 0
+        right.annotate(
+            f"{LABEL[name]}\n{parameters[name] / 1e6:.2f}M params",
+            xy=(latency, mae),
+            xytext=(-12 if leftward else 12, 0),
+            textcoords="offset points",
+            color=ink["secondary"],
+            fontsize=8.5,
+            ha="right" if leftward else "left",
+            va="center",
+            linespacing=1.35,
+        )
+
+    # Margins first: the reference labels are placed against the axes edge, and
+    # the data points must not already be sitting there.
+    right.margins(x=0.32, y=0.26)
+
+    for name in ("persistence", "climatology"):
+        entry = results.get(name)
+        if entry is None:
+            continue
+        right.axhline(entry["mae"], color=colours[name], linewidth=1.4, linestyle=":", zorder=2)
+        right.annotate(
+            f"{_display_name(name)} - free, 0 parameters",
+            xy=(0.988, entry["mae"]),
+            xycoords=("axes fraction", "data"),
+            xytext=(0, 5),
+            textcoords="offset points",
+            color=ink["secondary"],
+            fontsize=8,
+            ha="right",
+        )
+
+    right.set_xlabel("inference latency (ms per forward pass)", color=ink["secondary"], fontsize=9)
+    right.set_ylabel("mean absolute error (reflectance)", color=ink["secondary"], fontsize=9)
+    right.set_title(
+        "Same budget, very different cost", color=ink["primary"], fontsize=11, loc="left", pad=10
+    )
+    right.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+
+    for axis in axes:
+        axis.grid(True, color=ink["grid"], linewidth=0.6, alpha=0.9, zorder=0)
+        axis.set_axisbelow(True)
+        for spine in ("top", "right"):
+            axis.spines[spine].set_visible(False)
+        for spine in ("left", "bottom"):
+            axis.spines[spine].set_color(ink["grid"])
+        axis.tick_params(colors=ink["secondary"], labelsize=8.5)
+
+    fig.suptitle(
+        "EarthNet2021 forecast quality - "
+        f"{setup['history'] * revisit} days of context, {setup['horizon'] * revisit} days predicted",
+        color=ink["primary"],
+        fontsize=12.5,
+        x=0.008,
+        ha="left",
+        y=0.985,
+    )
+    extent = (
+        "full 128x128 scenes" if not setup.get("crop_size") else f"{setup['crop_size']}px crops"
+    )
+    fig.text(
+        0.008,
+        0.008,
+        f"{setup['windows']} held-out validation windows, {extent}, cloud-masked metrics. "
+        "Solid = state space model, dashed = baseline, dotted = parameter-free reference.\n"
+        "Every model trained on identical data for an identical budget of 6 epochs; none to "
+        "convergence. Latency measured on CPU with warmup, reported as a median.",
+        color=ink["secondary"],
+        fontsize=7.5,
+        ha="left",
+        va="bottom",
+        linespacing=1.5,
+    )
+
+    fig.tight_layout(rect=(0, 0.075, 1, 0.945))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(destination, dpi=170, facecolor=ink["surface"])
+    plt.close(fig)
+    return destination
+
+
+def _display_name(name: str) -> str:
+    """Return a human label for a model or reference."""
+    return LABEL.get(name, name.capitalize())
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point.
 
@@ -408,6 +597,19 @@ def main(argv: list[str] | None = None) -> int:
             "no mixing sweep at %s; generate with "
             "`python scripts/benchmark_scaling.py --sweep mixing`",
             mixing_source,
+        )
+
+    quality_source = source.with_name("earthnet.json")
+    if quality_source.is_file():
+        quality = json.loads(quality_source.read_text(encoding="utf-8"))
+        for mode in ("light", "dark"):
+            logger.info(
+                "wrote %s", render_quality(quality, mode, output_dir / f"quality-{mode}.png")
+            )
+    else:
+        logger.info(
+            "no EarthNet evaluation at %s; generate with " "`python scripts/evaluate_earthnet.py`",
+            quality_source,
         )
     return 0
 

@@ -362,3 +362,57 @@ class TestSyntheticDataset:
     def test_is_a_real_earthnet_dataset(self, tmp_path: Path):
         dataset = SyntheticEarthNet2021(tmp_path, spec=SPEC, history_length=3, horizon=2)
         assert isinstance(dataset, EarthNet2021Dataset)
+
+
+class TestCropping:
+    """Cropping must shrink every tensor of a sample by the same window."""
+
+    def test_crop_sets_the_spatial_size(self, dataset_root: Path):
+        sample = make_dataset(dataset_root, crop_size=4)[0]
+        assert sample["images"].shape[-2:] == (4, 4)
+        assert sample["target"].shape[-2:] == (4, 4)
+
+    def test_crop_applies_to_masks_too(self, dataset_root: Path):
+        sample = make_dataset(dataset_root, crop_size=4, cloud_masking=True)[0]
+        assert sample["images_mask"].shape[-2:] == (4, 4)
+        assert sample["target_mask"].shape[-2:] == (4, 4)
+
+    def test_no_crop_keeps_the_native_size(self, dataset_root: Path):
+        assert make_dataset(dataset_root)[0]["images"].shape[-2:] == (SPEC.size, SPEC.size)
+
+    def test_validation_crops_deterministically(self, dataset_root: Path):
+        """A moving validation crop would make the metric noisy for no reason."""
+        dataset = make_dataset(dataset_root, split=Split.VAL, crop_size=4)
+        first = dataset[0]["images"]
+        assert torch.equal(first, dataset[0]["images"])
+
+    def test_training_crops_are_drawn_at_random(self, dataset_root: Path):
+        dataset = make_dataset(dataset_root, split=Split.TRAIN, crop_size=4)
+        torch.manual_seed(0)
+        draws = [dataset[0]["images"].clone() for _ in range(20)]
+        assert any(not torch.equal(draws[0], other) for other in draws[1:])
+
+    def test_history_and_target_share_one_origin(self, dataset_root: Path):
+        """The model must be asked to forecast the patch it was shown.
+
+        Checked against the source cube directly rather than by comparing the
+        two crops to each other: a shared but *wrong* origin would pass the
+        latter, and would train every model on misaligned ground.
+        """
+        dataset = make_dataset(dataset_root, split=Split.VAL, crop_size=4, cloud_masking=False)
+        entry = dataset.index[0]
+        cube = dataset._load_cube(entry.path)
+        assert dataset.crop is not None
+        top, left = dataset.crop.origin(*cube.spatial_size)
+
+        sample = dataset[0]
+        window = entry.window
+        expected_history = cube.images[window.history_slice][..., top : top + 4, left : left + 4]
+        expected_target = cube.images[window.target_slice][..., top : top + 4, left : left + 4]
+        assert torch.equal(sample["images"], expected_history)
+        assert torch.equal(sample["target"], expected_target)
+
+    def test_a_crop_larger_than_the_cube_fails_loudly(self, dataset_root: Path):
+        dataset = make_dataset(dataset_root, crop_size=SPEC.size * 2)
+        with pytest.raises(IndexError, match="No usable sample"):
+            _ = dataset[0]

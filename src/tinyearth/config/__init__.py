@@ -11,6 +11,7 @@ from __future__ import annotations
 from tinyearth.config.resolution import (
     ResolvedPaths,
     config_fingerprint,
+    from_container,
     resolve_paths,
     save_config,
     to_container,
@@ -38,6 +39,7 @@ __all__ = [
     "TinyEarthConfig",
     "WandbConfig",
     "config_fingerprint",
+    "from_container",
     "register_configs",
     "resolve_paths",
     "save_config",

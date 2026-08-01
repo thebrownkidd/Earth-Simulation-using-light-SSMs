@@ -103,7 +103,7 @@ def calibrate(args: argparse.Namespace) -> dict[str, dict[str, int]]:
 
         for width in range(args.step, args.max_width + 1, args.step):
             try:
-                backbone = cls(  # type: ignore[call-arg]
+                backbone = cls(
                     latent_dim=args.latent_dim,
                     hidden_dim=width,
                     n_layers=args.layers,

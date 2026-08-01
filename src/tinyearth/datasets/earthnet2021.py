@@ -38,6 +38,7 @@ from pathlib import Path
 
 from torch.utils.data import Dataset
 
+from tinyearth.datasets.crops import CropMode, SpatialCrop
 from tinyearth.datasets.masking import (
     MaskPolicy,
     apply_mask_policy,
@@ -154,6 +155,10 @@ class EarthNet2021Dataset(Dataset[Sample]):
         cache_size: Decoded cubes retained per worker. ``0`` disables.
         nan_is_invalid: Treat NaN imagery pixels as invalid.
         max_cubes: Read at most this many cubes. For smoke tests and debugging.
+        crop_size: Side length of a square spatial crop, or ``None`` for whole
+            128x128 scenes. Training splits crop at a random origin, which also
+            augments; every other split crops centred, so the metric does not
+            move between epochs. See :mod:`tinyearth.datasets.crops`.
 
     Raises:
         SplitNotFoundError: If the split's directory is absent.
@@ -180,6 +185,7 @@ class EarthNet2021Dataset(Dataset[Sample]):
         cache_size: int = 4,
         nan_is_invalid: bool = True,
         max_cubes: int | None = None,
+        crop_size: int | None = None,
     ) -> None:
         self.root = Path(root)
         self.split = Split(split) if isinstance(split, str) else split
@@ -192,6 +198,14 @@ class EarthNet2021Dataset(Dataset[Sample]):
         self.expected_frames = expected_frames
         self.context_frames = context_frames
         self.nan_is_invalid = nan_is_invalid
+        self.crop = (
+            None
+            if crop_size is None
+            else SpatialCrop(
+                size=crop_size,
+                mode=CropMode.RANDOM if self.split is Split.TRAIN else CropMode.CENTER,
+            )
+        )
 
         if min_valid_fraction > 0.0 and not cloud_masking:
             raise ValueError(
@@ -306,14 +320,26 @@ class EarthNet2021Dataset(Dataset[Sample]):
 
         history_valid = cube.valid[window.history_slice]
         target_valid = cube.valid[window.target_slice]
+        history = cube.images[window.history_slice]
+        target = cube.images[window.target_slice]
 
+        if self.crop is not None:
+            # One origin for all four tensors: imagery and its mask must agree
+            # on which pixels they describe, and the target must forecast the
+            # same patch of ground the history observed.
+            top, left = self.crop.origin(*cube.spatial_size)
+            history = self.crop.apply(history, top, left)
+            target = self.crop.apply(target, top, left)
+            history_valid = self.crop.apply(history_valid, top, left)
+            target_valid = self.crop.apply(target_valid, top, left)
+
+        # Checked after cropping, so the threshold applies to the pixels the
+        # model is actually asked to predict. A scene that is clear overall can
+        # still yield a fully clouded crop.
         if self.cloud_masking and not passes_validity_threshold(
             target_valid, self.min_valid_fraction
         ):
             return None
-
-        history = cube.images[window.history_slice]
-        target = cube.images[window.target_slice]
 
         if self.cloud_masking:
             history = apply_mask_policy(history, history_valid, self.mask_policy)

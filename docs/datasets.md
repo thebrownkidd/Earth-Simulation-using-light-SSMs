@@ -86,17 +86,56 @@ reproducing official EarthNetScore numbers.
 
 ```bash
 pip install -e ".[data]"
-python scripts/download_earthnet2021.py --root data/earthnet2021
-python scripts/download_earthnet2021.py --instructions   # manual route
+
+# A subset sized for a laptop: ~8 GB, ~1200 cubes.
+python scripts/download_earthnet2021.py --splits train --max-tarballs 8
+
+# Everything (~155 GB for train alone).
+python scripts/download_earthnet2021.py --splits all
 ```
 
-Sizes: train ~100 GB (~23000 cubes), each test track ~5–15 GB (~4000 cubes).
+Measured sizes, per split:
+
+| Split | Tarballs | Total | Cubes |
+| --- | --- | --- | --- |
+| `train` | 160 | ~155 GB | ~23000 |
+| `iid` | 29 | ~5 GB | ~4000 |
+| `ood` | 29 | ~5 GB | ~4000 |
+| `extreme` | 58 | ~7 GB | ~4000 |
+| `seasonal` | 200 | ~15 GB | ~4000 |
+
+**You almost certainly want `--max-tarballs`.** The dataset ships as ~1 GB tarballs, each
+independently addressable, so there is no need to take a whole split. The binding
+constraint for the experiments here is CPU training throughput, not data.
+
+**Use `--stride` with it.** The tarballs are **grouped by Sentinel-2 tile**, so consecutive
+archives hold the same patch of the planet. A plain prefix is not a sample of
+EarthNet2021 — the first eight training tarballs are 1200 cubes of a single tile in
+southwest Iberia, and a model trained *and validated* on them has seen exactly one
+landscape. Spreading the selection costs nothing:
+
+```bash
+# 8 tarballs drawn from across the split, so the subset spans several regions.
+python scripts/download_earthnet2021.py --splits train --max-tarballs 8 --stride 20
+```
+
+The manifest is sorted by name before selection, so a given `--max-tarballs`/`--stride`
+pair picks the same archives on every machine. Downloads resume: completed tarballs are
+recorded in `.download_progress.json` under the destination root and are not refetched.
+
+> Check what you actually got: `ls data/earthnet2021/train/` lists one directory per tile.
+> If it holds a single entry, every cube you have is from one place.
+
+> This script does not call `earthnet.Downloader.get`, though it uses the toolkit's URL
+> manifest. Two reasons: the toolkit's downloader is all-or-nothing, and it verifies TLS
+> against the platform trust store, which on Windows cannot build a chain to the download
+> host and fails with `CERTIFICATE_VERIFY_FAILED`. This script verifies against `certifi`.
 
 Expected layout:
 
 ```
 data/earthnet2021/
-├── train/
+├── train/                  cubes grouped by Sentinel-2 tile, e.g. train/29SND/*.npz
 ├── iid_test_split/
 ├── ood_test_split/
 ├── extreme_test_split/
@@ -165,6 +204,57 @@ generate_windows(30, WindowSpec(history_length=4, horizon=1))            # 26 wi
 generate_windows(30, WindowSpec(history_length=4, horizon=2),
                  mode=WindowMode.ANCHORED, context_length=10)            # 1 window: 6..12
 ```
+
+At the official protocol (`history=10, horizon=20`) a window is the whole 30-frame cube,
+so each cube yields exactly one sample and `stride` cannot bind.
+
+---
+
+## Spatial cropping
+
+`crop_size` cuts a square patch out of each 128×128 window. Training crops at a **random**
+origin, which also augments; every other split crops **centred**, so a validation metric
+does not wander between epochs.
+
+```yaml
+data:
+  crop_size: 32     # null keeps whole 128x128 scenes
+```
+
+### Why this is the right place to economise
+
+Spatial extent is the dominant cost of a training step — measured on the reference CPU, a
+step at 128 px costs about 18× one at 32 px, closely tracking the 16× pixel ratio.
+
+Crucially, that cost falls on the **encoder and decoder**, which this project holds fixed
+across every architecture compared. It does not fall on the temporal backbone, which is
+the component under study. Cropping therefore buys a large amount of compute without
+touching the independent variable. Shortening the sequence would have been the opposite
+trade: cheaper, but it would attack the very thing being measured.
+
+Cropping is preferred to downsampling because it preserves the native 20 m ground
+resolution — the model sees real Sentinel-2 texture rather than a blurred average — and
+because a random crop differs between epochs. The cost is field of view: a 32×32 crop
+covers 640 m rather than 2.56 km.
+
+### Train on crops, predict on whole scenes
+
+No parameter in the model depends on height or width. The encoder and decoder are fully
+convolutional, and the temporal backbone folds the latent grid into the batch dimension,
+treating each spatial location as an independent sequence. A checkpoint trained on 32×32
+crops therefore runs unchanged on a full 128×128 scene.
+
+This is exploited directly: `scripts/evaluate_earthnet.py` and
+`scripts/visualize_forecasts.py` both default to whole scenes, so the reported numbers and
+the figures answer the harder question than the one training optimised.
+
+One origin is drawn per sample and applied to imagery, target and both masks alike. A mask
+cropped at a different origin from its imagery would silently mislabel which pixels are
+cloudy; a target cropped elsewhere than its history would ask the model to forecast a
+different place than it observed. `tests/test_dataset.py::TestCropping` guards this.
+
+The validity threshold is applied **after** cropping, so it acts on the pixels actually
+predicted — a scene that is clear overall can still yield a fully clouded crop.
 
 ---
 

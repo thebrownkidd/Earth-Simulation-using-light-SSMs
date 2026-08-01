@@ -1,0 +1,64 @@
+# @package _global_
+#
+# Objective
+#   Verify the real-data path before committing to a multi-hour run: that the
+#   downloaded cubes decode, that the 10->20 protocol yields windows, that
+#   cropping and cloud masking behave on real imagery, and that a step runs.
+#
+#   This is the cheap failure. Every mistake it catches -- a wrong dataset root,
+#   an unreadable cube, a validity threshold that rejects everything -- would
+#   otherwise surface hours into training.
+#
+# Configuration
+#   Identical to `earthnet` except: 24 cubes, 2 epochs, 4 steps per epoch.
+#
+# Expected output
+#   Two epochs of decreasing loss, val metrics, and summary.json. Seconds, not
+#   hours.
+#
+# Interpretation
+#   Success means the pipeline is sound. The metric VALUES are meaningless --
+#   24 cubes and 8 optimiser steps. Nothing here is a result.
+#
+# Usage
+#   tinyearth-train +experiment=earthnet_smoke
+#   tinyearth-train +experiment=earthnet_smoke model=mamba
+
+defaults:
+  - override /data: earthnet2021
+  - override /model: s4d
+  - override /training: smoke
+
+run:
+  name: earthnet
+  group: smoke
+  notes: "Real-data pipeline verification."
+  tags: [earthnet, smoke]
+
+seed:
+  value: 1234
+
+data:
+  history_length: 10
+  horizon: 20
+  crop_size: 32
+  min_valid_fraction: 0.1
+  # Small enough to run in seconds, but large enough that the hash partition
+  # still lands cubes in validation at val_fraction=0.25.
+  max_cubes: 24
+  val_fraction: 0.25
+  loader:
+    batch_size: 4
+    # In-process loading: worker startup would dominate a run this short, and a
+    # traceback from a cube that fails to decode stays readable.
+    num_workers: 0
+    persistent_workers: false
+    prefetch_factor: null
+
+model:
+  latent_dim: 64
+  backbone:
+    size: null
+    kwargs:
+      hidden_dim: 64
+      n_layers: 2

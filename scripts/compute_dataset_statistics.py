@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 import torch
@@ -28,6 +28,7 @@ from tinyearth.config.schema import DataConfig, LoaderConfig
 from tinyearth.datasets.factory import build_datamodule
 from tinyearth.datasets.normalization import compute_channel_statistics
 from tinyearth.datasets.splits import Split
+from tinyearth.datasets.types import Batch
 from tinyearth.utils.logging import get_logger, setup_logging
 from tinyearth.utils.paths import cache_dir, data_dir, outputs_dir, project_root
 from tinyearth.utils.seed import seed_everything
@@ -62,7 +63,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _batches(
-    loader: object, max_batches: int
+    loader: Iterable[Batch], max_batches: int
 ) -> Iterator[tuple[torch.Tensor, torch.Tensor | None]]:
     """Yield ``(images, valid)`` pairs from a loader, up to ``max_batches``.
 
@@ -76,7 +77,7 @@ def _batches(
     Yields:
         Imagery and its validity mask.
     """
-    for count, batch in enumerate(loader):  # type: ignore[call-overload]
+    for count, batch in enumerate(loader):
         if count >= max_batches:
             return
         images = torch.cat([batch["images"], batch["target"]], dim=1)

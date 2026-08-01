@@ -259,10 +259,19 @@ def test_typo_in_a_backbone_argument_still_fails(tmp_path: Path):
 
 
 def test_size_tier_resolves_to_a_calibrated_width(tmp_path: Path):
+    """A size tier must reach the built model, not merely be computed.
+
+    Model configs ship a concrete `kwargs.hidden_dim`, which wins over `size`.
+    Standing it down with `null` is what lets the tier apply. Asserting on the
+    *built* width rather than on a log line matters: the message warning that
+    the tier was ignored also contains the tier's width, so a substring check
+    passed happily while every size-tier run used the default width instead.
+    """
     result = _run(
         "tinyearth.cli.inspect_model",
         "model=s4d",
         "model.backbone.size=tiny",
+        "~model.backbone.kwargs.hidden_dim",
         "logging.rich=false",
         "data.synthetic.size=16",
         f"paths.outputs={tmp_path.as_posix()}",
@@ -270,7 +279,44 @@ def test_size_tier_resolves_to_a_calibrated_width(tmp_path: Path):
     )
     output = result.stdout + result.stderr
     assert result.returncode == 0, result.stderr
-    assert "hidden_dim=272" in output
+    assert "size tier 'tiny' -> hidden_dim=272" in output
+    assert "is set and wins" not in output
+
+
+def test_an_explicit_width_overrides_the_tier_and_says_so(tmp_path: Path):
+    """An explicit width must override the tier, and say so loudly.
+
+    The override itself is legitimate -- the hidden_dim sweep relies on it --
+    but left quiet it disables a matched-budget comparison without a trace.
+    """
+    result = _run(
+        "tinyearth.cli.inspect_model",
+        "model=s4d",
+        "model.backbone.size=tiny",
+        "model.backbone.kwargs.hidden_dim=64",
+        "logging.rich=false",
+        "data.synthetic.size=16",
+        f"paths.outputs={tmp_path.as_posix()}",
+        f"paths.cache={(tmp_path / 'cache').as_posix()}",
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "size tier is NOT in effect" in output
+
+
+def test_a_backbone_with_no_width_at_all_fails_loudly(tmp_path: Path):
+    result = _run(
+        "tinyearth.cli.inspect_model",
+        "model=s4d",
+        "~model.backbone.kwargs.hidden_dim",
+        "logging.rich=false",
+        "data.synthetic.size=16",
+        f"paths.outputs={tmp_path.as_posix()}",
+        f"paths.cache={(tmp_path / 'cache').as_posix()}",
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "width is undefined" in output
 
 
 def test_model_command_reports_size_and_cost(tmp_path: Path):

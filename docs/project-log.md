@@ -164,6 +164,105 @@ in the README.
 
 ---
 
+## Phase 5 — Real data
+
+**Delivered:** partial download support, spatial cropping, parameter-free
+reference forecasts, full-scene evaluation, the qualitative figures, and the
+first forecast-quality numbers this repository has produced on real data.
+
+**The constraint that shaped everything.** The reference machine is a Ryzen 7
+5700U laptop: 8 cores, 15 GB RAM, **no CUDA GPU**, PyTorch CPU build. Measured
+before planning anything, a training step at the official 128 px protocol runs
+at 0.27–0.50 samples/s. One epoch over a thousand cubes would take an hour, per
+model. Every decision below follows from that measurement rather than from
+taste.
+
+**Decisions**
+
+| Decision | Reasoning |
+| --- | --- |
+| Download a *prefix* of the training split | The dataset ships as 160 independently-addressable ~1 GB tarballs. The toolkit's downloader is all-or-nothing, so 155 GB was the smallest thing it could do. `--max-tarballs` takes 8. The binding constraint was never data volume — it was CPU throughput. |
+| Wrote our own downloader | Also forced: the toolkit verifies TLS against the platform trust store, which on this machine cannot build a chain to the host and fails outright. `certifi` works. |
+| Reduce **space**, never time | A step at 128 px costs ~18× one at 32 px. That cost falls on the encoder and decoder — the components held *fixed* across architectures. Cropping buys compute without touching the independent variable. Shortening the sequence would have attacked the very thing being measured. |
+| Crop rather than downsample | Preserves native 20 m texture, and a random crop differs every epoch, so it augments. Each 128×128 scene yields ~9,400 distinct 32×32 crops, which is why 1,200 cubes is not as few as it sounds. |
+| Keep the official 10→20 protocol exactly | The temporal axis is the object of study. Halving the horizon would have made the run ~2× faster and the result far less comparable. |
+| Train on crops, evaluate on whole scenes | No parameter depends on height or width, so this is free. It also makes the reported numbers answer a *harder* question than training optimised. |
+| Run the four models concurrently | Measured: four threads reach ~95% of sixteen-thread throughput (s4d 3.96 vs 4.09 samples/s). The other twelve threads were contention, not work. Four processes at four threads each is close to 4× the useful work. |
+| Added persistence and climatology | A learned MAE is uninterpretable alone. Earth surface imagery is mostly static over 100 days, so a model that learned only to echo its input would still post a good number. |
+
+**Bugs and surprises**
+
+- **Mamba is ~6× slower than S4D in training**, and its throughput is *flat* in
+  batch size — 0.64, 0.65, 0.71 samples/s at batch 2, 4, 8. There is no batching
+  trick that recovers it; the sequential Python scan dominates. It alone set the
+  epoch budget for every other model, since a controlled comparison requires
+  equal epochs.
+- Batch 16 and 32 made Mamba *worse than linearly* (3.1× and 3.9× per doubling).
+  Resident memory stayed at 0.5 GB, so this was cache behaviour, not swapping —
+  worth recording because the obvious diagnosis was wrong.
+- **The first forecast figure was washed out to grey.** The cause was not the
+  model: `stretch_limits` computed percentiles over cloud-masked pixels, which
+  the mask policy had blanked to zero. On a quarter-cloud scene those zeros own
+  the lower percentile and pin the black point at 0.0. Excluding them recovered
+  the true dynamic range. The prediction's own statistics were fine all along
+  (mean 0.105 against truth's 0.082) — a case where the plot lied and the
+  numbers did not.
+- **Error panels lit up bright over cloud**, because blanked truth is zero and
+  the model does not predict zero. Masked now, and drawn flat grey.
+- **The observed NDVI curve plunged to zero several times a season**, inventing a
+  dramatic vegetation collapse out of weather. Fully clouded frames have both
+  bands zeroed, so NDVI evaluates to exactly 0 — a *plausible* value for bare
+  ground, which is what made it dangerous. Such frames are now gaps.
+- **The matched-parameter comparison was not matched.** The first launch trained
+  at 0.73M, 0.73M, 1.19M and 2.61M parameters — a 3.6x spread — while every
+  config said `size: tiny` and every log line said the tier had been resolved.
+  Two independent causes, both silent:
+
+  1. Every model config ships a concrete `backbone.kwargs.hidden_dim`, and an
+     explicit width beats `size`. The tier was computed, logged, and discarded.
+     There was no way to *stand down* a default width, so `size` could never
+     take effect from a composed config at all.
+  2. The tiers are calibrated at four layers, but the ConvLSTM and transformer
+     configs default to two — so even the right width would have hit the wrong
+     budget.
+
+  **The test that should have caught this asserted on a log substring.** It ran
+  `model.backbone.size=tiny` and checked for `"hidden_dim=272"` in the output —
+  and the message warning that the tier had been *ignored* also contains
+  `hidden_dim=272`. It passed for the entire life of the size-tier feature while
+  the feature did nothing. Fixed by making `hidden_dim: null` mean "let the tier
+  decide", raising when a backbone ends up with no width at all, promoting the
+  override notice to a warning that says the tier is not in effect, and
+  rewriting the test to assert on the *resolution* message and on the absence of
+  the override message. Caught only because 2M-parameter models reported
+  0.7M — the kind of thing a glance at a log catches and a green test suite does
+  not.
+- **The first eight tarballs were all one Sentinel-2 tile.** The archives are
+  grouped by tile, so a prefix of the training split is one region of the planet
+  — 1200 cubes of southwest Iberia — not a sample of EarthNet2021. Nothing
+  failed; `ls data/earthnet2021/train/` listing a single directory was the only
+  symptom. A model trained *and validated* on that has seen one landscape, and
+  the validation cubes are neighbours of the training ones. Fixed by adding
+  `--stride` to the downloader and fetching additional tarballs from across the
+  manifest. The documentation had explicitly claimed the opposite — that the
+  ordering did not correlate with content — which is a reminder that a plausible
+  assumption written confidently into docs is worse than no note at all.
+- Two config conflicts (`persistent_workers` and `prefetch_factor` against
+  `num_workers: 0`) were caught by the schema in seconds, before any run.
+
+**Honest limits of the quality numbers**
+
+- 32×32 training crops cover 640 m, not the full 2.56 km scene.
+- **No model is trained to convergence.** Eight epochs is a compute budget set by
+  the slowest architecture, applied equally to all four so the comparison stays
+  controlled.
+- Metrics are reported on the held-out validation partition. No hyperparameter
+  search was run, so the only selection pressure is the choice of best epoch.
+- The official test tracks are unused. Their cubes are split into separate
+  context and target files, which the reader does not yet join.
+
+---
+
 ## Cross-cutting lessons
 
 **Subprocess tests earn their cost.** Three bugs — the `--dry-run` leak, the
@@ -180,6 +279,13 @@ exceptions.
 a subtly wrong kernel still trains and still produces plausible losses. The FFT
 convolution is checked against a literal step-by-step recurrence.
 
+**Assert on the outcome, not on the log line.** The size-tier test checked that
+`hidden_dim=272` appeared in the output. It did appear — inside the message
+saying the tier had been overridden and ignored. A test that reads a log is
+testing a string; a test that reads the built model is testing the system. Where
+a message and its negation share a substring, the assertion is worse than
+absent, because it also reports success.
+
 **State the limitation next to the number.** The transformer is
 non-autoregressive and the ConvLSTM is not; Mamba's scan is sequential; the
 asymptotic argument does not apply at `T≤8`. Each of these makes some
@@ -195,13 +301,21 @@ architecture look better or worse for reasons unrelated to the claim being made.
 | 2 — Data pipeline | Complete and verified |
 | 3 — Baselines and training | Complete and verified |
 | 4 — SSMs and experiments | Complete and verified |
+| 5 — Real data | Complete; quality numbers are budget-limited, see below |
 
-**What has not been done.** No model has been trained to convergence on real
-EarthNet2021 data, so **no forecast-quality result exists**. Every quality number
-in this repository was produced on synthetic data over a handful of optimiser
-steps and is meaningless as science. The infrastructure is verified; the
-experiments have not been run.
+The EarthNet2021 format constants are now validated against a real download
+rather than against documentation: 30 frames, `(128, 128, 7, 30)` float16,
+mean reflectance 0.109, mean valid fraction 0.76.
+
+**What has not been done.** No model is trained to *convergence* — eight epochs is
+a compute budget, not a stopping criterion, and it was set by the slowest
+architecture so that all four could be compared at equal cost. The quality
+numbers are real and reproducible, but they measure four architectures under a
+small fixed budget rather than four architectures at their best.
 
 Also outstanding: the frozen foundation-encoder comparison, GPU verification of
-mixed precision and peak-memory measurement, and validating the EarthNet2021
-format constants against a real download rather than against documentation.
+mixed precision and peak-memory measurement, the official test tracks (their
+context and target files need joining), and residual forecasting — predicting
+the *change* from the last observed frame rather than the absolute image, which
+would start every model at the persistence baseline instead of asking it to
+rediscover the scene.
