@@ -159,13 +159,22 @@ def build_forecaster(cfg: ModelConfig, in_channels: int, horizon: int) -> Foreca
     backbone_kwargs = dict(cfg.backbone.kwargs)
     if cfg.backbone.size is not None:
         width = resolve_hidden_dim(cfg.backbone.name, cfg.backbone.size)
-        if "hidden_dim" in backbone_kwargs:
-            logger.info(
-                "backbone.size=%r suggests hidden_dim=%d, but kwargs.hidden_dim=%s is set "
-                "explicitly and wins",
+        # `hidden_dim: null` means "let the tier decide". Every model config
+        # ships a concrete default width, and without a way to stand that
+        # default down, `size` could never take effect from a composed config --
+        # the tier would be computed, logged, and then silently discarded, which
+        # is exactly how the matched-budget comparison came to be run at
+        # mismatched budgets.
+        explicit = backbone_kwargs.get("hidden_dim")
+        if explicit is not None:
+            logger.warning(
+                "backbone.size=%r resolves to hidden_dim=%d for %r, but "
+                "kwargs.hidden_dim=%s is set and wins. The size tier is NOT in "
+                "effect; set kwargs.hidden_dim=null to use it.",
                 cfg.backbone.size,
                 width,
-                backbone_kwargs["hidden_dim"],
+                cfg.backbone.name,
+                explicit,
             )
         else:
             backbone_kwargs["hidden_dim"] = width
@@ -175,6 +184,11 @@ def build_forecaster(cfg: ModelConfig, in_channels: int, horizon: int) -> Foreca
                 width,
                 cfg.backbone.name,
             )
+    elif backbone_kwargs.get("hidden_dim") is None:
+        raise ValueError(
+            f"Backbone {cfg.backbone.name!r} has neither backbone.size nor "
+            "backbone.kwargs.hidden_dim set, so its width is undefined. Set one."
+        )
 
     backbone = build_backbone(
         cfg.backbone.name,

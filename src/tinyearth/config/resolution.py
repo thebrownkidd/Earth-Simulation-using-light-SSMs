@@ -27,6 +27,7 @@ from tinyearth.utils.paths import project_root
 __all__ = [
     "ResolvedPaths",
     "config_fingerprint",
+    "from_container",
     "resolve_paths",
     "save_config",
     "to_container",
@@ -139,6 +140,35 @@ def to_dataclass(cfg: DictConfig) -> TinyEarthConfig:
             "configs/config.yaml lists the registered schema."
         )
     return obj
+
+
+def from_container(container: dict[str, object]) -> TinyEarthConfig:
+    """Rebuild a typed config from the plain dictionary stored in a checkpoint.
+
+    The inverse of :func:`to_container`, and the reason it is needed: a
+    checkpoint records its config as JSON-compatible data, which loses the
+    structured type. Handing that straight to :func:`to_dataclass` fails, because
+    an untyped :class:`~omegaconf.DictConfig` resolves to a plain ``dict``. The
+    schema has to be reapplied first.
+
+    This is what lets a downstream script -- evaluation, visualisation --
+    reconstruct exactly the model and data pipeline a checkpoint was trained
+    with, rather than guessing from filenames or requiring the original config
+    to be passed alongside.
+
+    Args:
+        container: A config dictionary, normally ``checkpoint["config"]``.
+
+    Returns:
+        The typed config.
+
+    Raises:
+        TypeError: If the dictionary does not conform to the schema.
+    """
+    merged = OmegaConf.merge(OmegaConf.structured(TinyEarthConfig), OmegaConf.create(container))
+    if not isinstance(merged, DictConfig):  # pragma: no cover - structurally impossible
+        raise TypeError(f"Expected a mapping config, got {type(merged)!r}.")
+    return to_dataclass(merged)
 
 
 def config_fingerprint(cfg: DictConfig | TinyEarthConfig, length: int = 8) -> str:

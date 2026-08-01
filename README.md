@@ -26,11 +26,119 @@ tinyearth-train +experiment=ssm_smoke      # trains end to end in seconds, no da
 
 ## Findings
 
-All measured on CPU, dataset-free, reproducible via `scripts/benchmark_efficiency.py` and
-`scripts/benchmark_scaling.py`. These are **cost** results; see [Status](#status) for what is
-not yet established.
+Two families of result. The **quality** findings are trained on real EarthNet2021 data; the
+**cost** findings are dataset-free and reproducible in minutes on any CPU.
 
-### 1. In isolation, S4D's temporal mixing beats attention at every sequence length
+---
+
+### 1. On real data at a matched budget, the four architectures are nearly tied — and only just beat doing nothing
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/quality-dark.png">
+  <img alt="Left: forecast error against lead time, showing persistence best at short range and worst at long range. Right: error against inference latency, with S4D lowest-error but slowest." src="docs/figures/quality-light.png">
+</picture>
+
+Official EarthNet2021 protocol — 10 Sentinel-2 frames (50 days) in, 20 frames (100 days)
+out — on 161 held-out validation windows scored at full 128×128 resolution.
+
+| | val MAE ↓ | RMSE ↓ | SSIM ↑ | latency | parameters |
+| --- | --- | --- | --- | --- | --- |
+| **S4D (SSM)** | **0.0282** | **0.0421** | 0.739 | 611 ms | 2.08M |
+| Transformer | 0.0282 | 0.0424 | 0.762 | 384 ms | 2.11M |
+| ConvLSTM | 0.0294 | 0.0439 | 0.740 | 367 ms | 2.22M |
+| *Persistence* | *0.0299* | *0.0445* | ***0.803*** | *free* | *0* |
+| *Climatology* | *0.0352* | *0.0495* | *0.782* | *free* | *0* |
+
+**Mamba is missing from this table, and the reason is the result.** Its selective scan is a
+sequential Python loop over `T+K` steps with no fused kernel, which makes it **~5× slower to
+train than S4D** — 11.3 s per optimiser step against 2.2 s, measured, and flat in batch size
+(0.64, 0.65, 0.71 samples/s at batch 2, 4, 8), so no batching trick recovers it. A single
+Mamba epoch costs more than one epoch of the other three architectures combined. At a fixed
+compute budget on a CPU the second SSM is simply not affordable — a practical finding about
+selective SSMs without CUDA kernels, not an omission.
+
+**S4D and the transformer are indistinguishable** — 0.02815 against 0.02819, a 0.1% gap on
+161 windows. Both beat persistence, but by **5.8%**. That margin is the honest headline: a
+2M-parameter model, trained for six epochs on a laptop CPU, is barely better than repeating
+the last picture you saw.
+
+**Persistence wins on SSIM**, and beats every learned model on it. The learned forecasts are
+blurry — visible directly below — and structural similarity punishes blur where mean absolute
+error rewards it. Reporting only MAE would have hidden that completely.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/forecast-0-dark.png">
+  <img alt="Filmstrip: 10 observed context frames, then ground truth, S4D prediction and absolute error at six lead times out to 100 days." src="docs/figures/forecast-0-light.png">
+</picture>
+
+The model reproduces the field boundaries and the scene's layout, and then holds them almost
+static across 100 days — the characteristic failure of an L1-trained video predictor at a
+small budget. Cloud-covered frames are labelled rather than silently rendered black, and
+error is not scored where the truth was never observed.
+
+Every panel shares one contrast stretch, computed from the observed frames. Restretching each
+panel to its own range is the standard way to make a forecast look better than it is, and it
+would have hidden exactly the flatness that is the most honest thing in this figure.
+
+### 2. But the learned models predict the *season*, and the references cannot
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/ndvi-0-dark.png">
+  <img alt="NDVI maps and mean-greenness trajectory. The learned models track the seasonal rise in vegetation; persistence and climatology stay flat." src="docs/figures/ndvi-0-light.png">
+</picture>
+
+The aggregate MAE hides where the difference actually lives. Split the error by lead time
+(left panel of the quality figure) and the two regimes separate cleanly:
+
+- **Short range (< ~35 days): persistence is the best forecaster available.** Nothing has
+  changed yet, so echoing the last observation is close to optimal, and every learned model
+  is worse than it.
+- **Long range (> ~35 days): persistence collapses** as the scene drifts away from its last
+  observation, while the learned models stay roughly flat. By day 100 persistence has
+  roughly doubled its error and the learned models have not.
+
+The NDVI trajectory shows why. Vegetation greens up over the forecast window, and the
+learned models track that rise; persistence and climatology are flat lines by construction.
+**Getting the average brightness of a landscape right is easy — getting the greening right
+is the actual task**, and it is the only place these models earn their parameters.
+
+#### And here is the same figure on a scene where they fail
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/ndvi-1-dark.png">
+  <img alt="NDVI figure for a dry scene. The observed vegetation stays near 0.30 while every learned model predicts 0.53 to 0.62; persistence sits almost exactly on the truth." src="docs/figures/ndvi-1-light.png">
+</picture>
+
+This scene is dry — bare and senescent ground, observed NDVI hovering around **0.30**. All
+three models predict a green landscape at **0.53–0.62**, roughly double the truth, and stay
+there for the full 100 days. Persistence, at 0.285, is nearly exact.
+
+That is regression to the mean, seen directly: trained on a corpus where most scenes are
+vegetated, the models have learned an average landscape and apply it to a place that is not
+average. It is the same bias that makes the filmstrip look flat, and it is why the aggregate
+5.8% margin over persistence is thinner than it sounds — the models win on average by
+tracking the seasonal trend, and lose badly on scenes that depart from it.
+
+Both scenes come from the same run and the same script; nothing was selected to make either
+point. Scene 0 is the most cloud-free window in the validation split and scene 1 the second.
+
+### 3. The cheapest mixer is the slowest model
+
+The right panel is the project's original question, asked of trained models. At a matched 2M
+budget S4D reaches the lowest error but costs **611 ms against the transformer's 384 ms** —
+1.6× the latency for a 0.1% quality difference.
+
+That is the same trade the cost benchmarks below predict from first principles: a diagonal
+SSM's temporal mixing is cheap in parameters, so it spends the saving on width, and width is
+expensive everywhere else. **On this task, at this scale, the SSM's parameter efficiency does
+not convert into either a speed win or a quality win.**
+
+---
+
+### 4. In isolation, S4D's temporal mixing beats attention at every sequence length
+
+The cost findings below are dataset-free and reproducible via
+`scripts/benchmark_efficiency.py` and `scripts/benchmark_scaling.py`.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/figures/mixing-dark.png">
@@ -52,7 +160,7 @@ Two things worth noticing:
 - **Mamba is not in the winning group.** It is an SSM and it is 3× slower than S4D.
   Selectivity without a fused kernel costs more than the architecture class buys.
 
-### 2. But at matched parameters the *whole model* flips the ranking
+### 5. But at matched parameters the *whole model* flips the ranking
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/figures/efficiency-dark.png">
@@ -69,7 +177,7 @@ So the cheaper mixer loses the full-model comparison. **Parameter efficiency and
 efficiency are different questions, and here they have opposite answers** — which means
 "how small can an SSM be?" does too.
 
-### 3. The SSM's state dimension is cheap in parameters and expensive in compute
+### 6. The SSM's state dimension is cheap in parameters and expensive in compute
 
 `state_dim` is the SSM's own capacity axis, with no ConvLSTM or transformer counterpart.
 Growing S4D's state 8→256 (32×) adds only **+1.08M parameters**; reaching the same parameter
@@ -92,13 +200,15 @@ you are counting parameters.
 | | |
 | --- | --- |
 | **4 temporal backbones** | `s4d`, `mamba`, `convlstm`, `transformer` — one interface, one config flag |
-| **Full data pipeline** | EarthNet2021 reader, temporal windowing, cloud masking, deterministic splits, caching |
+| **2 reference forecasts** | Persistence and climatology, parameter-free — the axis a learned MAE is read against |
+| **Full data pipeline** | EarthNet2021 reader, partial download, temporal windowing, spatial cropping, cloud masking, deterministic splits, caching |
 | **Training stack** | Trainer, optimiser/schedule construction, checkpointing, TensorBoard + JSONL + optional W&B |
 | **10 metrics** | MAE, RMSE, PSNR, SSIM, SAM (all mask-aware) + parameters, FLOPs, peak memory, latency, throughput |
-| **5 experiment sweeps** | scaling, history length, forecast horizon, hidden dimension, state dimension |
+| **6 experiment sweeps** | EarthNet comparison, scaling, history length, forecast horizon, hidden dimension, state dimension |
 | **Calibrated size tiers** | ~2M / ~5M / ~10M / ~20M, measured per architecture |
-| **809 tests** | strict mypy, ruff, black, CI on Linux + Windows |
-| **Zero-download demo** | Synthetic data in the real on-disk format — everything runs without the 100 GB dataset |
+| **Qualitative figures** | Forecast filmstrips and NDVI trajectories, rendered on whole scenes from crop-trained checkpoints |
+| **891 tests** | strict mypy over `src`, `tests` *and* `scripts`; ruff, black, CI on Linux + Windows |
+| **Zero-download demo** | Synthetic data in the real on-disk format — everything runs without the dataset |
 
 ---
 
@@ -134,29 +244,38 @@ a closed-form value, not a plausible-looking one.
 
 ## Status
 
-**The platform is complete. The quality experiments have not been run.**
+The platform is complete and the quality experiment has been run on real data. **The numbers
+are real; they are also budget-limited, and the limits matter more than the numbers.**
 
-No model has been trained to convergence on real EarthNet2021 data, so there is no
-forecast-quality result here. Every quality number in the repo came from synthetic data over
-a handful of optimiser steps and is meaningless as science. The cost findings above *are*
-real and reproducible.
-
-Producing quality results needs the ~100 GB download and a GPU:
+Reproduce the whole thing on a laptop, no GPU required:
 
 ```bash
 pip install -e ".[data]"
-python scripts/download_earthnet2021.py --root data/earthnet2021
-
-tinyearth-train --multirun +experiment=scaling data=earthnet2021 \
-    model=s4d,mamba,convlstm,transformer \
-    model.backbone.size=tiny,small,base,large
-
-python scripts/collate_results.py --group scaling
+python scripts/download_earthnet2021.py --splits train --max-tarballs 8 --stride 20
+python scripts/run_earthnet_study.py
+python scripts/evaluate_earthnet.py
+python scripts/visualize_forecasts.py
 ```
 
-Also outstanding: the frozen foundation-encoder comparison, GPU verification of mixed
-precision and peak-memory measurement, and validating the EarthNet2021 format constants
-against a real download rather than against documentation.
+**What these numbers do not support.** Read them as a controlled comparison of four
+architectures under one small fixed budget — not as any architecture's best.
+
+- **Nothing is trained to convergence.** Six epochs is a compute budget set by the slowest
+  architecture and applied equally to all four so the comparison stays controlled.
+- **1,650 cubes across 5 Sentinel-2 tiles**, and one tile is 73% of them. Geographic
+  diversity is thin, and the validation cubes are often neighbours of training ones.
+- **32×32 training crops** cover 640 m, not the full 2.56 km scene. Evaluation and figures
+  use whole scenes, which the fully convolutional architecture allows for free.
+- **The official test tracks are unused.** Their cubes ship as separate context and target
+  files, which the reader does not yet join, so no EarthNetScore comparison is implied.
+- Metrics come from the held-out validation partition. No hyperparameter search was run, so
+  the only selection pressure is the choice of best epoch.
+
+**Outstanding.** The frozen foundation-encoder comparison; GPU verification of mixed precision
+and peak-memory measurement; joining the official test tracks; and **residual forecasting** —
+predicting the change from the last observed frame rather than the absolute image, which
+would start every model at persistence instead of asking it to rediscover the scene, and is
+the single most promising fix for the blur.
 
 ---
 
@@ -191,8 +310,19 @@ python scripts/benchmark_scaling.py --sweep mixing   # cost against sequence len
 python scripts/benchmark_scaling.py --sweep state    # cost against SSM state size
 python scripts/plot_results.py                       # render the figures above
 
-pytest                                      # 809 tests, ~3 min
-pytest -m "not slow"                        # 784 tests, ~28 s
+pytest                                      # 891 tests, ~4 min
+pytest -m "not slow"                        # 864 tests, ~30 s
+```
+
+The real-data study, end to end:
+
+```bash
+pip install -e ".[data]"
+python scripts/download_earthnet2021.py --splits train --max-tarballs 8 --stride 20
+python scripts/run_earthnet_study.py        # trains all four, concurrently
+python scripts/evaluate_earthnet.py         # scores them and the references
+python scripts/visualize_forecasts.py       # filmstrips and NDVI figures
+python scripts/plot_results.py              # quality figure
 ```
 
 Sweeps (add `data=earthnet2021` for real results):

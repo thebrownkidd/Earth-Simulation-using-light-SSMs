@@ -131,6 +131,7 @@ def build_dataset(
         "cache_size": cfg.cache_size,
         "nan_is_invalid": cfg.nan_is_invalid,
         "max_cubes": cfg.max_cubes,
+        "crop_size": cfg.crop_size,
     }
 
     if cfg.name == _SYNTHETIC:

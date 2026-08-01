@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from torch.utils.data import Dataset
 
+from tinyearth.datasets.crops import CropMode, SpatialCrop
 from tinyearth.datasets.earthnet2021 import EarthNet2021Dataset, IndexEntry
 from tinyearth.datasets.factory import (
     DataBundle,
@@ -78,6 +79,7 @@ __all__ = [
     "Batch",
     "ChannelStandardizer",
     "ChannelStatistics",
+    "CropMode",
     "DataBundle",
     "EarthNet2021Dataset",
     "IdentityNormalizer",
@@ -89,6 +91,7 @@ __all__ = [
     "Normalizer",
     "Sample",
     "SampleMetadata",
+    "SpatialCrop",
     "Split",
     "SplitNotFoundError",
     "SyntheticEarthNet2021",
