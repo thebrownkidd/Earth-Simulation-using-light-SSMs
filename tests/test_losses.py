@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from tinyearth.models.losses import (
     LOSSES,
     CharbonnierLoss,
     CompositeLoss,
     ForecastLoss,
+    GDLLoss,
     L1Loss,
     L2Loss,
     expand_mask,
@@ -22,7 +24,7 @@ from tinyearth.models.losses import (
 )
 
 SHAPE = (2, 3, 4, 8, 8)
-LOSS_NAMES = ("l1", "l2", "charbonnier")
+LOSS_NAMES = ("l1", "l2", "charbonnier", "gdl")
 
 
 @pytest.fixture
@@ -191,5 +193,96 @@ class TestCompositeLoss:
         assert float(composite(corrupted, target, mask)) == pytest.approx(before, rel=1e-5)
 
 
-def test_registry_exposes_all_phase3_losses():
+class TestGDLLoss:
+    """GDL is a blur penalty, added to L1 rather than replacing it.
+
+    Compares gradient *magnitude* between prediction and target, so a
+    prediction that reproduces the mean but smooths over real edges -- L1's
+    blind spot -- is penalised here.
+    """
+
+    def test_is_exactly_zero_for_a_perfect_prediction(self):
+        torch.manual_seed(0)
+        target = torch.rand(*SHAPE)
+        assert float(GDLLoss()(target, target)) == 0.0
+
+    def test_increases_monotonically_as_the_prediction_is_blurred(self):
+        """A blurred prediction has a weaker edge than a sharp target.
+
+        Uses a single step edge as the target -- unlike a periodic pattern
+        (e.g. a checkerboard), blurring a lone edge monotonically weakens it
+        with no aliasing, so this is a clean signal for "more blur -> more
+        GDL". Increasingly blurred copies of the target stand in for
+        "prediction".
+        """
+        size = 32
+        step = torch.zeros(size, size)
+        step[:, size // 2 :] = 1.0
+        target = step.view(1, 1, 1, size, size).expand(1, 1, 4, size, size).contiguous()
+
+        losses = [
+            float(GDLLoss()(_gaussian_blur(target, sigma), target))
+            for sigma in (0.0, 0.5, 1.0, 2.0, 3.0)
+        ]
+
+        assert losses[0] == pytest.approx(0.0, abs=1e-5)
+        assert losses == sorted(losses)
+        assert losses[-1] > losses[0]
+
+    def test_fully_masked_region_contributes_nothing_regardless_of_content(self):
+        torch.manual_seed(0)
+        prediction = torch.rand(1, 1, 1, 8, 8)
+        target = torch.rand(1, 1, 1, 8, 8)
+        mask = torch.zeros(1, 1, 1, 8, 8)
+
+        assert float(GDLLoss()(prediction, target, mask)) == 0.0
+
+    def test_a_gradient_crossing_a_mask_boundary_is_excluded(self):
+        """A gradient needs both neighbours valid, not just the pixel itself.
+
+        Corrupting only the masked half of the image must not move the loss,
+        including at the boundary row/column immediately next to the valid
+        region -- that gradient spans one valid and one invalid pixel, and
+        must be excluded too, not just gradients fully inside the mask.
+        """
+        torch.manual_seed(0)
+        prediction = torch.rand(1, 1, 1, 8, 8)
+        target = torch.rand(1, 1, 1, 8, 8)
+        mask = torch.ones(1, 1, 1, 8, 8)
+        mask[..., :4, :] = 0.0
+
+        before = float(GDLLoss()(prediction, target, mask))
+        corrupted = prediction.clone()
+        corrupted[..., :4, :] += 50.0
+
+        assert float(GDLLoss()(corrupted, target, mask)) == pytest.approx(before, rel=1e-5)
+
+    def test_degenerate_single_pixel_row_does_not_produce_nan(self):
+        """A 1-wide or 1-tall spatial extent has no gradient to take there."""
+        prediction = torch.rand(1, 1, 1, 1, 4)
+        target = torch.rand(1, 1, 1, 1, 4)
+        result = GDLLoss()(prediction, target)
+        assert not torch.isnan(result)
+
+
+def _gaussian_blur(image: torch.Tensor, sigma: float) -> torch.Tensor:
+    """Separable Gaussian blur over the spatial dims of a [B, K, C, H, W] tensor.
+
+    Written by hand rather than pulling in torchvision/scipy for one test.
+    """
+    if sigma <= 0:
+        return image
+    radius = max(1, int(3 * sigma))
+    coords = torch.arange(-radius, radius + 1, dtype=torch.float32)
+    kernel = torch.exp(-(coords**2) / (2 * sigma**2))
+    kernel = kernel / kernel.sum()
+
+    batch, steps, channels, height, width = image.shape
+    flat = image.reshape(batch * steps * channels, 1, height, width)
+    flat = F.conv2d(flat, kernel.view(1, 1, -1, 1), padding=(radius, 0))
+    flat = F.conv2d(flat, kernel.view(1, 1, 1, -1), padding=(0, radius))
+    return flat.reshape(batch, steps, channels, height, width)
+
+
+def test_registry_exposes_every_loss():
     assert set(LOSSES.keys()) == set(LOSS_NAMES)

@@ -73,6 +73,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import URLError
 
+from tqdm import tqdm  # type: ignore[import-untyped]
+
 from tinyearth.utils.logging import get_logger, setup_logging
 from tinyearth.utils.paths import project_root
 
@@ -211,11 +213,24 @@ def _ssl_context() -> ssl.SSLContext:
 
 
 def digest_of(path: Path) -> str:
-    """Return the SHA-256 digest of a file, read in bounded chunks."""
+    """Return the SHA-256 digest of a file, read in bounded chunks with progress."""
     sha = hashlib.sha256()
-    with path.open("rb") as handle:
+    size = path.stat().st_size
+    with (
+        path.open("rb") as handle,
+        tqdm(
+            total=size,
+            unit="B",
+            unit_scale=True,
+            unit_divisor=1024,
+            desc=f"    Hashing {path.name}",
+            leave=False,
+            ncols=100,
+        ) as pbar,
+    ):
         while chunk := handle.read(_HASH_BUFFER_BYTES):
             sha.update(chunk)
+            pbar.update(len(chunk))
     return sha.hexdigest()
 
 
@@ -237,7 +252,7 @@ def write_progress(root: Path, done: set[str]) -> None:
 
 
 def fetch(tarball: Tarball, destination: Path, context: ssl.SSLContext) -> None:
-    """Stream one tarball to disk, reporting throughput.
+    """Stream one tarball to disk, reporting throughput with progress bar.
 
     Args:
         tarball: Archive to fetch.
@@ -250,36 +265,42 @@ def fetch(tarball: Tarball, destination: Path, context: ssl.SSLContext) -> None:
     opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
     partial = destination.with_suffix(destination.suffix + ".part")
     start = time.perf_counter()
-    received = 0
 
+    logger.info("  Downloading %s ...", tarball.name)
     with opener.open(tarball.url, timeout=120) as response:
         declared = response.headers.get("Content-Length")
         total = int(declared) if declared else None
-        with partial.open("wb") as handle:
+
+        with (
+            partial.open("wb") as handle,
+            tqdm(
+                total=total,
+                unit="B",
+                unit_scale=True,
+                unit_divisor=1024,
+                desc=f"    {tarball.name}",
+                leave=False,
+                ncols=100,
+            ) as pbar,
+        ):
             while chunk := response.read(_CHUNK_BYTES):
                 handle.write(chunk)
-                received += len(chunk)
-                if total and received % (64 * _CHUNK_BYTES) < _CHUNK_BYTES:
-                    logger.info(
-                        "  %s  %5.1f%%  %.1f MB/s",
-                        tarball.name,
-                        100 * received / total,
-                        received / 1e6 / max(time.perf_counter() - start, 1e-9),
-                    )
+                pbar.update(len(chunk))
 
     elapsed = time.perf_counter() - start
     partial.replace(destination)
+    throughput = total / 1e6 / max(elapsed, 1e-9) if total else 0
     logger.info(
-        "  %s  %.0f MB in %.0f s (%.1f MB/s)",
+        "    ✓ %s  %.0f MB in %.0f s (%.1f MB/s)",
         tarball.name,
-        received / 1e6,
+        total / 1e6 if total else 0,
         elapsed,
-        received / 1e6 / max(elapsed, 1e-9),
+        throughput,
     )
 
 
 def extract(archive: Path, root: Path) -> None:
-    """Unpack a tarball into the dataset root.
+    """Unpack a tarball into the dataset root with progress bar.
 
     Uses the ``data`` extraction filter, which refuses absolute paths and
     parent-directory escapes. Python 3.14 makes this the default; setting it
@@ -289,14 +310,20 @@ def extract(archive: Path, root: Path) -> None:
         archive: Tarball to unpack.
         root: Destination directory.
     """
+    logger.info("    Extracting %s ...", archive.name)
     with tarfile.open(archive, "r:gz") as tar:
-        tar.extractall(path=root, filter="data")
+        members = tar.getmembers()
+        with tqdm(total=len(members), desc=f"    {archive.name}", leave=False, ncols=100) as pbar:
+            for member in members:
+                tar.extract(member, path=root, filter="data")
+                pbar.update(1)
+    logger.info("    ✓ Extracted %s", archive.name)
 
 
 def download(
     root: Path, splits: list[str], max_tarballs: int | None, keep: bool, stride: int
 ) -> int:
-    """Fetch, verify and unpack the requested tarballs.
+    """Fetch, verify and unpack the requested tarballs with progress tracking.
 
     Args:
         root: Destination directory.
@@ -311,62 +338,136 @@ def download(
     targets = list(SPLIT_CHOICES) if "all" in splits else splits
     root.mkdir(parents=True, exist_ok=True)
     context = _ssl_context()
+
+    logger.info("")
+    logger.info("=" * 80)
+    logger.info("EarthNet2021 Download with Verification")
+    logger.info("=" * 80)
+    logger.info("Destination: %s", root)
+
+    # Load progress
+    logger.info("Reading prior progress...")
     done = read_progress(root)
 
-    plan = {split: select(load_manifest(split), max_tarballs, stride) for split in targets}
+    # Load and plan manifests
+    logger.info("Loading manifests for %s...", ", ".join(targets))
+    plan = {}
+    for split in targets:
+        logger.info("  Loading %s split...", split)
+        manifest = load_manifest(split)
+        selected = select(manifest, max_tarballs, stride)
+        plan[split] = selected
+        logger.info("    → %d tarballs from %d total", len(selected), len(manifest))
+
     planned = sum(len(chunks) for chunks in plan.values())
     remaining = [chunk for chunks in plan.values() for chunk in chunks if chunk.name not in done]
 
-    free_gb = shutil.disk_usage(root).free / 1e9
-    logger.info("destination: %s", root)
-    logger.info(
-        "plan: %d tarballs across %s (%d already done, %d to fetch)",
-        planned,
-        ", ".join(targets),
-        planned - len(remaining),
-        len(remaining),
-    )
-    logger.info(
-        "free disk: %.0f GB; each tarball is ~1 GB and expands to roughly its own size", free_gb
-    )
+    # Show detailed plan with tile info
+    logger.info("")
+    logger.info("Download Plan:")
+    for split in targets:
+        tarballs = plan[split]
+        if tarballs:
+            tiles = {tb.name.split("_")[1] for tb in tarballs}  # Extract tile ID
+            logger.info("  %s: %d tarballs (%s)", split, len(tarballs), ", ".join(sorted(tiles)))
+
+    # Disk space check
+    disk = shutil.disk_usage(root)
+    free_gb = disk.free / 1e9
+    used_gb = disk.used / 1e9
+    logger.info("")
+    logger.info("Disk Space:")
+    logger.info("  Available: %.1f GB", free_gb)
+    logger.info("  In use:    %.1f GB", used_gb)
+    logger.info("  Required:  ~%.1f GB (each tarball ~1 GB, expands to ~2 GB)", len(remaining) * 2)
+
+    # Summary
+    logger.info("")
+    logger.info("Summary:")
+    logger.info("  Total planned: %d tarballs", planned)
+    logger.info("  Already done:  %d tarballs", planned - len(remaining))
+    logger.info("  To fetch:      %d tarballs", len(remaining))
 
     if not remaining:
-        logger.info("nothing to do; every planned tarball is already present.")
+        logger.info("")
+        logger.info("✓ Nothing to do; every planned tarball is already present.")
         return 0
 
-    for index, tarball in enumerate(remaining, start=1):
-        logger.info("[%d/%d] %s", index, len(remaining), tarball.name)
-        archive = root / tarball.name
-        try:
-            fetch(tarball, archive, context)
-        except (URLError, OSError, TimeoutError) as error:
-            logger.error("download failed for %s: %s", tarball.name, error)
-            logger.error("re-run to resume; completed tarballs are not refetched.")
-            return 1
+    logger.info("")
+    logger.info("Starting downloads...")
+    logger.info("=" * 80)
 
-        logger.info("  verifying SHA-256 ...")
-        actual = digest_of(archive)
-        if actual != tarball.sha256:
-            archive.unlink(missing_ok=True)
-            logger.error(
-                "checksum mismatch for %s (expected %s, got %s); the file was deleted.",
-                tarball.name,
-                tarball.sha256[:16],
-                actual[:16],
-            )
-            return 1
+    # Download loop with progress bar
+    with tqdm(
+        total=len(remaining), desc="Overall progress", unit="tarball", ncols=100
+    ) as pbar_overall:
+        for index, tarball in enumerate(remaining, start=1):
+            logger.info("")
+            logger.info("[%d/%d] Processing %s", index, len(remaining), tarball.name)
 
-        logger.info("  extracting ...")
-        extract(archive, root)
-        if not keep:
-            archive.unlink(missing_ok=True)
+            archive = root / tarball.name
 
-        done.add(tarball.name)
-        write_progress(root, done)
+            # Download
+            try:
+                fetch(tarball, archive, context)
+            except (URLError, OSError, TimeoutError) as error:
+                logger.error("")
+                logger.error("✗ Download failed for %s: %s", tarball.name, error)
+                logger.error("  Re-run to resume; completed tarballs are not refetched.")
+                return 1
 
+            # Verify
+            logger.info("    Verifying SHA-256...")
+            with tqdm(
+                total=archive.stat().st_size,
+                unit="B",
+                unit_scale=True,
+                desc="    Hashing",
+                leave=False,
+                ncols=100,
+            ) as pbar_hash:
+                sha = hashlib.sha256()
+                with archive.open("rb") as f:
+                    while chunk := f.read(_HASH_BUFFER_BYTES):
+                        sha.update(chunk)
+                        pbar_hash.update(len(chunk))
+                actual = sha.hexdigest()
+
+            if actual != tarball.sha256:
+                archive.unlink(missing_ok=True)
+                logger.error("")
+                logger.error("✗ Checksum mismatch for %s", tarball.name)
+                logger.error("    Expected: %s", tarball.sha256)
+                logger.error("    Got:      %s", actual)
+                logger.error("    File deleted.")
+                return 1
+            logger.info("    ✓ Checksum verified")
+
+            # Extract
+            extract(archive, root)
+
+            # Cleanup
+            if not keep:
+                archive.unlink(missing_ok=True)
+                logger.info("    Cleaned up archive")
+
+            done.add(tarball.name)
+            write_progress(root, done)
+
+            pbar_overall.update(1)
+
+    # Final report
+    logger.info("")
+    logger.info("=" * 80)
     cubes = sum(1 for _ in root.rglob("*.npz"))
-    logger.info("done. %d cubes under %s", cubes, root)
-    logger.info("verify with:  tinyearth-data data=earthnet2021")
+    logger.info("✓ Download complete!")
+    logger.info("  Total cubes: %d", cubes)
+    logger.info("  Location: %s", root)
+    logger.info("")
+    logger.info("Next step:")
+    logger.info("  tinyearth-train +experiment=earthnet_s4d")
+    logger.info("=" * 80)
+    logger.info("")
     return 0
 
 

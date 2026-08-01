@@ -62,6 +62,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Print a SIZE_TIERS literal ready to paste into models/sizes.py.",
     )
+    parser.add_argument(
+        "--skip-connections",
+        action="store_true",
+        help=(
+            "Calibrate against the encoder/decoder built with skip connections "
+            "enabled, which are larger than the v1 baseline. Produces "
+            "SIZE_TIERS_SKIP, not SIZE_TIERS -- the two are not interchangeable, "
+            "since a v1 tier applied to a v2 (skip) model would no longer hit its "
+            "target and the matched-budget comparison would be silently wrong."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -75,10 +86,18 @@ def fixed_parameters(args: argparse.Namespace) -> int:
         Combined encoder + decoder parameter count.
     """
     encoder = CNNEncoder(
-        args.channels, args.latent_dim, base_channels=args.base_channels, depth=args.depth
+        args.channels,
+        args.latent_dim,
+        base_channels=args.base_channels,
+        depth=args.depth,
+        skip_connections=args.skip_connections,
     )
     decoder = CNNDecoder(
-        args.channels, args.latent_dim, base_channels=args.base_channels, depth=args.depth
+        args.channels,
+        args.latent_dim,
+        base_channels=args.base_channels,
+        depth=args.depth,
+        skip_channels=encoder.skip_channels if args.skip_connections else None,
     )
     return count_parameters(encoder) + count_parameters(decoder)
 
@@ -143,7 +162,8 @@ def main(argv: list[str] | None = None) -> int:
     table = calibrate(args)
 
     if args.emit_python:
-        print("\nSIZE_TIERS: Final[dict[str, dict[str, int]]] = {")
+        variable = "SIZE_TIERS_SKIP" if args.skip_connections else "SIZE_TIERS"
+        print(f"\n{variable}: Final[dict[str, dict[str, int]]] = {{")
         for name, tiers in table.items():
             entries = ", ".join(f'"{tier}": {width}' for tier, width in tiers.items())
             print(f'    "{name}": {{{entries}}},')

@@ -316,6 +316,143 @@ class TestTrainer:
         assert mask is not None
 
 
+def _checkpoint_path(trainer: Trainer, name: str = "last") -> Path:
+    """Return a trainer's checkpoint path, for tests that know it must exist.
+
+    ``Trainer.run_dir`` is typed ``Path | None`` since a Trainer built without
+    one (as in a notebook) never checkpoints; every trainer these resume tests
+    build has one, so this asserts that rather than repeating the same
+    ``assert ... is not None`` at each call site.
+    """
+    assert trainer.run_dir is not None
+    return trainer.run_dir / f"{name}.ckpt"
+
+
+class TestResume:
+    """Round-trips through save_checkpoint / load_checkpoint.
+
+    The mechanism under test is exercised end to end rather than piece by
+    piece: if optimizer momentum, the epoch index, or RNG state failed to
+    round-trip correctly, the resumed run would silently diverge from an
+    uninterrupted one and the final-metrics comparison below would catch it,
+    without needing to separately assert on each internal piece.
+    """
+
+    def _make_trainer(
+        self,
+        loaders,
+        tmp_path: Path,
+        run_name: str,
+        *,
+        epochs: int,
+        seed: int,
+        architecture_version: str = "v1_baseline",
+    ) -> Trainer:
+        torch.manual_seed(seed)
+        model = make_model()
+        cfg = make_training_config(epochs=epochs)
+        train_loader, val_loader = loaders
+        return Trainer(
+            model=model,
+            loss=L1Loss(),
+            optimizer=build_optimizer(model, cfg.optimizer),
+            cfg=cfg,
+            device=torch.device("cpu"),
+            train_loader=train_loader,
+            val_loader=val_loader,
+            run_dir=tmp_path / run_name,
+            tracker=NullTracker(),
+            architecture_version=architecture_version,
+        )
+
+    def test_resumed_run_matches_an_uninterrupted_run(self, loaders, tmp_path):
+        """Train 2+2 with a checkpoint in between; must match a straight 4."""
+        seed = 123
+
+        straight = self._make_trainer(loaders, tmp_path, "straight", epochs=4, seed=seed)
+        straight_result = straight.fit()
+
+        first_half = self._make_trainer(loaders, tmp_path, "resumed", epochs=2, seed=seed)
+        first_half.fit()
+        checkpoint = _checkpoint_path(first_half)
+        assert checkpoint.is_file()
+
+        second_half = self._make_trainer(loaders, tmp_path, "resumed", epochs=4, seed=seed)
+        start_epoch = second_half.load_checkpoint(checkpoint)
+        assert start_epoch == 2
+        resumed_result = second_half.fit(start_epoch=start_epoch)
+
+        # Only epochs 3-4 ran in this call.
+        assert [epoch.epoch for epoch in resumed_result.epochs] == [2, 3]
+
+        straight_final = straight_result.epochs[-1].validation
+        resumed_final = resumed_result.epochs[-1].validation
+        for key in ("val/mae", "val/loss"):
+            assert resumed_final[key] == pytest.approx(straight_final[key], rel=1e-4)
+
+        for (name, expected), (_, actual) in zip(
+            straight.model.named_parameters(), second_half.model.named_parameters(), strict=True
+        ):
+            torch.testing.assert_close(actual, expected, msg=f"parameter {name!r} does not match")
+
+    def test_global_step_resumes_rather_than_restarting(self, loaders, tmp_path):
+        first_half = self._make_trainer(loaders, tmp_path, "steps", epochs=2, seed=1)
+        first_half.fit()
+        steps_after_two_epochs = first_half.global_step
+
+        second_half = self._make_trainer(loaders, tmp_path, "steps", epochs=4, seed=1)
+        second_half.load_checkpoint(_checkpoint_path(first_half))
+        assert second_half.global_step == steps_after_two_epochs
+
+    def test_resuming_past_the_configured_epochs_runs_nothing_further(self, loaders, tmp_path):
+        first = self._make_trainer(loaders, tmp_path, "done", epochs=2, seed=1)
+        first.fit()
+
+        second = self._make_trainer(loaders, tmp_path, "done", epochs=2, seed=1)
+        start_epoch = second.load_checkpoint(_checkpoint_path(first))
+        result = second.fit(start_epoch=start_epoch)
+
+        assert result.epochs == []
+
+    def test_matching_architecture_version_is_accepted(self, loaders, tmp_path):
+        first = self._make_trainer(
+            loaders, tmp_path, "match", epochs=1, seed=1, architecture_version="v2_skip_gdl"
+        )
+        first.fit()
+
+        second = self._make_trainer(
+            loaders, tmp_path, "match", epochs=2, seed=1, architecture_version="v2_skip_gdl"
+        )
+        assert (
+            second.load_checkpoint(_checkpoint_path(first), architecture_version="v2_skip_gdl") == 1
+        )
+
+    def test_mismatched_architecture_version_is_refused_loudly(self, loaders, tmp_path):
+        """Resuming a v1 checkpoint into v2 code (or the reverse) must fail, not warp weights."""
+        first = self._make_trainer(
+            loaders, tmp_path, "v1", epochs=1, seed=1, architecture_version="v1_baseline"
+        )
+        first.fit()
+
+        second = self._make_trainer(
+            loaders, tmp_path, "v2", epochs=2, seed=1, architecture_version="v2_skip_gdl"
+        )
+        with pytest.raises(ValueError, match="Refusing to resume"):
+            second.load_checkpoint(_checkpoint_path(first), architecture_version="v2_skip_gdl")
+
+    def test_no_expected_version_skips_the_check(self, loaders, tmp_path):
+        """architecture_version=None is an explicit opt-out, not a default worth hiding."""
+        first = self._make_trainer(
+            loaders, tmp_path, "any", epochs=1, seed=1, architecture_version="v1_baseline"
+        )
+        first.fit()
+
+        second = self._make_trainer(
+            loaders, tmp_path, "any", epochs=2, seed=1, architecture_version="v2_skip_gdl"
+        )
+        assert second.load_checkpoint(_checkpoint_path(first)) == 1
+
+
 class TestTracking:
     def test_json_tracker_writes_one_record_per_call(self, tmp_path: Path):
         tracker = JsonTracker(tmp_path / "metrics.jsonl")

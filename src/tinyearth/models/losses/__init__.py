@@ -9,8 +9,9 @@ any number of them with weights.
 All losses are mask-aware. A large share of EarthNet2021 pixels are cloudy, and
 optimising against them teaches the model to predict cloud.
 
-Phase 3 ships L1 (the default), L2 and Charbonnier. SSIM, SAM and multi-scale
-reconstruction follow.
+Phase 3 ships L1 (the default), L2 and Charbonnier. Phase 6 adds GDL, a blur
+penalty meant to be combined with L1 via :class:`CompositeLoss`, not to
+replace it. SSIM, SAM and multi-scale reconstruction follow.
 """
 
 from __future__ import annotations
@@ -22,13 +23,14 @@ from tinyearth.models.losses.base import (
     expand_mask,
     masked_mean,
 )
-from tinyearth.models.losses.reconstruction import CharbonnierLoss, L1Loss, L2Loss
+from tinyearth.models.losses.reconstruction import CharbonnierLoss, GDLLoss, L1Loss, L2Loss
 
 __all__ = [
     "LOSSES",
     "CharbonnierLoss",
     "CompositeLoss",
     "ForecastLoss",
+    "GDLLoss",
     "L1Loss",
     "L2Loss",
     "expand_mask",

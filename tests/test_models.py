@@ -37,12 +37,24 @@ def make_backbone(name: str, latent_dim: int = LATENT, **kwargs: object) -> Temp
     return TEMPORAL_BACKBONES.build(name, latent_dim=latent_dim, **defaults)
 
 
-def make_forecaster(name: str, horizon: int = 2, depth: int = 2) -> Forecaster:
+def make_forecaster(
+    name: str, horizon: int = 2, depth: int = 2, skip_connections: bool = False
+) -> Forecaster:
     """Assemble a small forecaster with the named backbone."""
+    encoder = CNNEncoder(
+        CHANNELS, LATENT, base_channels=8, depth=depth, skip_connections=skip_connections
+    )
+    decoder = CNNDecoder(
+        CHANNELS,
+        LATENT,
+        base_channels=8,
+        depth=depth,
+        skip_channels=encoder.skip_channels if skip_connections else None,
+    )
     return Forecaster(
-        encoder=CNNEncoder(CHANNELS, LATENT, base_channels=8, depth=depth),
+        encoder=encoder,
         backbone=make_backbone(name),
-        decoder=CNNDecoder(CHANNELS, LATENT, base_channels=8, depth=depth),
+        decoder=decoder,
         horizon=horizon,
     )
 
@@ -126,6 +138,58 @@ class TestEncoder:
         assert issubclass(ENCODERS.get("cnn"), Encoder)
 
 
+class TestEncoderSkipConnections:
+    def test_default_has_no_skip_pathway(self, images):
+        encoder = CNNEncoder(CHANNELS, LATENT, base_channels=8, depth=2)
+        assert encoder.skip_channels == []
+        latents, skips = encoder.forward_with_skips(images)
+        assert skips == []
+        torch.testing.assert_close(latents, encoder(images))
+
+    def test_skip_channels_has_one_entry_per_resolution_level(self):
+        encoder = CNNEncoder(CHANNELS, LATENT, base_channels=8, depth=2, skip_connections=True)
+        assert encoder.skip_channels == [8, 16, 32]
+
+    @pytest.mark.parametrize("depth", [0, 1, 2, 3])
+    def test_skip_channels_length_matches_depth_plus_one(self, depth):
+        encoder = CNNEncoder(CHANNELS, LATENT, base_channels=8, depth=depth, skip_connections=True)
+        assert len(encoder.skip_channels) == depth + 1
+
+    def test_skip_feature_shapes_match_finest_to_coarsest_resolutions(self, images):
+        encoder = CNNEncoder(CHANNELS, LATENT, base_channels=8, depth=2, skip_connections=True)
+        _, skips = encoder.forward_with_skips(images)
+        expected = [
+            (BATCH, 8, SIZE, SIZE),
+            (BATCH, 16, SIZE // 2, SIZE // 2),
+            (BATCH, 32, SIZE // 4, SIZE // 4),
+        ]
+        assert [tuple(s.shape) for s in skips] == expected
+
+    def test_skip_features_are_the_last_context_frame_only(self, images):
+        """Not a mix, not the mean -- specifically the most recent observation."""
+        encoder = CNNEncoder(
+            CHANNELS, LATENT, base_channels=8, depth=1, skip_connections=True
+        ).eval()
+        with torch.no_grad():
+            _, skips = encoder.forward_with_skips(images)
+            last_frame_only = encoder.forward_with_skips(images[:, -1:])[1]
+        torch.testing.assert_close(skips[0], last_frame_only[0])
+
+    def test_forward_is_unaffected_by_skip_connections(self, images):
+        """Enabling the pathway must not change the latents forward() returns."""
+        torch.manual_seed(0)
+        plain = CNNEncoder(CHANNELS, LATENT, base_channels=8, depth=2)
+        torch.manual_seed(0)
+        skip = CNNEncoder(CHANNELS, LATENT, base_channels=8, depth=2, skip_connections=True)
+        torch.testing.assert_close(plain(images), skip(images))
+
+    def test_no_parameters_are_added_by_enabling_skip_connections(self):
+        """Selecting the last frame is an indexing operation, not a learned one."""
+        plain = CNNEncoder(CHANNELS, LATENT, base_channels=8, depth=2)
+        skip = CNNEncoder(CHANNELS, LATENT, base_channels=8, depth=2, skip_connections=True)
+        assert count_parameters(skip) == count_parameters(plain)
+
+
 class TestDecoder:
     def test_restores_the_input_resolution(self):
         decoder = CNNDecoder(CHANNELS, LATENT, base_channels=8, depth=2)
@@ -155,6 +219,76 @@ class TestDecoder:
     def test_is_registered(self):
         assert "cnn" in DECODERS
         assert issubclass(DECODERS.get("cnn"), Decoder)
+
+
+class TestDecoderSkipConnections:
+    def test_default_has_no_skip_pathway_and_no_extra_parameters(self):
+        plain = CNNDecoder(CHANNELS, LATENT, base_channels=8, depth=2)
+        assert plain.skip_channels == []
+        assert len(plain.skip_fusion) == 0
+
+    def test_rejects_skip_channels_of_the_wrong_length(self):
+        with pytest.raises(ValueError, match="needs 3"):
+            CNNDecoder(CHANNELS, LATENT, base_channels=8, depth=2, skip_channels=[8, 16])
+
+    def test_output_shape_is_unaffected_by_skip_connections(self):
+        encoder = CNNEncoder(CHANNELS, LATENT, base_channels=8, depth=2, skip_connections=True)
+        decoder = CNNDecoder(
+            CHANNELS, LATENT, base_channels=8, depth=2, skip_channels=encoder.skip_channels
+        )
+        images = torch.rand(BATCH, 4, CHANNELS, SIZE, SIZE)
+        latents, skips = encoder.forward_with_skips(images)
+        output = decoder(latents[:, :3], skips)
+        assert output.shape == (BATCH, 3, CHANNELS, SIZE, SIZE)
+
+    def test_configured_decoder_requires_skips_at_forward(self):
+        encoder = CNNEncoder(CHANNELS, LATENT, base_channels=8, depth=1, skip_connections=True)
+        decoder = CNNDecoder(
+            CHANNELS, LATENT, base_channels=8, depth=1, skip_channels=encoder.skip_channels
+        )
+        latents = torch.rand(1, 2, LATENT, SIZE // 2, SIZE // 2)
+        with pytest.raises(ValueError, match="got none"):
+            decoder(latents)
+
+    def test_unconfigured_decoder_rejects_unexpected_skips(self):
+        decoder = CNNDecoder(CHANNELS, LATENT, base_channels=8, depth=1)
+        latents = torch.rand(1, 2, LATENT, SIZE // 2, SIZE // 2)
+        stray_skip = [torch.rand(1, 8, SIZE, SIZE)]
+        with pytest.raises(ValueError, match="no skip pathway"):
+            decoder(latents, stray_skip)
+
+    def test_gradients_reach_the_fusion_convolutions(self):
+        encoder = CNNEncoder(CHANNELS, LATENT, base_channels=8, depth=2, skip_connections=True)
+        decoder = CNNDecoder(
+            CHANNELS, LATENT, base_channels=8, depth=2, skip_channels=encoder.skip_channels
+        )
+        images = torch.rand(BATCH, 4, CHANNELS, SIZE, SIZE)
+        latents, skips = encoder.forward_with_skips(images)
+
+        decoder(latents[:, :2], skips).sum().backward()
+        missing = [
+            name
+            for name, param in decoder.skip_fusion.named_parameters()
+            if param.grad is None or float(param.grad.abs().sum()) == 0
+        ]
+        assert not missing, f"no gradient reached: {missing}"
+
+    def test_the_skip_feature_actually_changes_the_output(self):
+        """Not just wired in shape -- its content must affect the forecast."""
+        torch.manual_seed(0)
+        encoder = CNNEncoder(CHANNELS, LATENT, base_channels=8, depth=1, skip_connections=True)
+        decoder = CNNDecoder(
+            CHANNELS, LATENT, base_channels=8, depth=1, skip_channels=encoder.skip_channels
+        ).eval()
+        images = torch.rand(1, 3, CHANNELS, SIZE, SIZE)
+
+        with torch.no_grad():
+            latents, skips = encoder.forward_with_skips(images)
+            base = decoder(latents[:, :2], skips)
+            perturbed_skips = [s + 5.0 for s in skips]
+            perturbed = decoder(latents[:, :2], perturbed_skips)
+
+        assert not torch.allclose(base, perturbed)
 
 
 class TestConvLSTMCell:
@@ -349,6 +483,42 @@ class TestForecaster:
         assert make_forecaster(name).parameter_breakdown().backbone_fraction > 0.2
 
 
+@pytest.mark.parametrize("name", BACKBONE_NAMES)
+class TestForecasterWithSkipConnections:
+    """Skip connections must work identically regardless of which backbone is under it.
+
+    The skip pathway lives entirely in the encoder/decoder, which the
+    Forecaster wires together via forward_with_skips() -- the backbone never
+    sees a skip feature. These tests exist to catch a wiring mistake in that
+    plumbing, not to re-test the encoder/decoder behaviour already covered
+    directly above.
+    """
+
+    def test_round_trips_to_the_input_resolution(self, name, images):
+        model = make_forecaster(name, horizon=2, skip_connections=True)
+        assert model(images).shape == (BATCH, 2, CHANNELS, SIZE, SIZE)
+
+    def test_gradients_reach_all_three_components(self, name, images):
+        model = make_forecaster(name, skip_connections=True)
+        model(images).sum().backward()
+        for component in ("encoder", "backbone", "decoder"):
+            grads = [
+                p.grad is not None
+                for p in getattr(model, component).parameters()
+                if p.requires_grad
+            ]
+            assert grads and all(grads), f"{component} received no gradient"
+
+    def test_output_differs_from_the_same_model_without_skip_connections(self, name, images):
+        torch.manual_seed(0)
+        plain = make_forecaster(name, skip_connections=False).eval()
+        torch.manual_seed(0)
+        skip = make_forecaster(name, skip_connections=True).eval()
+
+        with torch.no_grad():
+            assert not torch.allclose(plain(images), skip(images))
+
+
 class TestControlledComparison:
     """The fixed components must be identical across backbones."""
 
@@ -363,6 +533,28 @@ class TestControlledComparison:
         first, second = (make_forecaster(name).parameter_breakdown() for name in BACKBONE_NAMES)
         assert first.backbone != second.backbone
         assert first.total - first.backbone == second.total - second.backbone
+
+    def test_holds_with_skip_connections_enabled_too(self):
+        """The v2 architecture must keep the same controlled-comparison property."""
+        breakdowns = {
+            name: make_forecaster(name, skip_connections=True).parameter_breakdown()
+            for name in BACKBONE_NAMES
+        }
+        encoders = {b.encoder for b in breakdowns.values()}
+        decoders = {b.decoder for b in breakdowns.values()}
+        assert len(encoders) == 1, f"encoder sizes differ across backbones: {breakdowns}"
+        assert len(decoders) == 1, f"decoder sizes differ across backbones: {breakdowns}"
+
+    def test_skip_connections_add_the_same_overhead_regardless_of_backbone(self):
+        """The +43,232 fixed-component cost must not depend on which backbone sits under it."""
+        deltas = {
+            name: (
+                make_forecaster(name, skip_connections=True).parameter_breakdown().total
+                - make_forecaster(name, skip_connections=False).parameter_breakdown().total
+            )
+            for name in BACKBONE_NAMES
+        }
+        assert len(set(deltas.values())) == 1, deltas
 
 
 class TestForecasterValidation:

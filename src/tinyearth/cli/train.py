@@ -14,12 +14,15 @@ Example:
     tinyearth-train +experiment=baseline_smoke            # the Phase 3 experiment
     tinyearth-train model=transformer                     # swap the backbone
     tinyearth-train model=convlstm training.epochs=50 data=earthnet2021
+    tinyearth-train +experiment=earthnet model=s4d --resume outputs/earthnet/s4d/last.ckpt
     ```
 """
 
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 
 from omegaconf import DictConfig
 
@@ -36,19 +39,56 @@ from tinyearth.utils.logging import log_section
 
 __all__ = ["main", "run_training"]
 
+_RESUME_FLAG = "--resume"
 
-def run_training(context: RunContext) -> TrainingResult:
+
+def _extract_resume_path(argv: list[str]) -> tuple[list[str], Path | None]:
+    """Strip a non-Hydra ``--resume <path>`` pair out of an argument list.
+
+    Follows the same pattern as ``--dry-run`` in ``cli/inspect_config.py``:
+    Hydra's override grammar has no notion of a bare flag taking a value, so
+    anything not in ``key=value`` form must be consumed before Hydra sees it.
+
+    Args:
+        argv: Raw argument list, as from :data:`sys.argv`.
+
+    Returns:
+        ``(remaining_argv, path)``; ``path`` is ``None`` if ``--resume`` was
+        not present.
+
+    Raises:
+        SystemExit: If ``--resume`` is the last argument, with nothing after it.
+    """
+    if _RESUME_FLAG not in argv:
+        return argv, None
+
+    index = argv.index(_RESUME_FLAG)
+    if index + 1 >= len(argv):
+        raise SystemExit(
+            f"{_RESUME_FLAG} requires a checkpoint path, e.g. {_RESUME_FLAG} last.ckpt"
+        )
+
+    remaining = argv[:index] + argv[index + 2 :]
+    return remaining, Path(argv[index + 1])
+
+
+def run_training(context: RunContext, *, resume_path: Path | None = None) -> TrainingResult:
     """Build everything and train.
 
     Args:
         context: An initialised run context.
+        resume_path: A checkpoint to resume from. When given, training
+            continues from one epoch past the checkpoint's recorded epoch,
+            with model, optimiser, scheduler and RNG state restored --
+            rather than starting fresh at epoch 0.
 
     Returns:
         The training result.
 
     Raises:
         ValueError: If the composed config lacks a ``data``, ``model`` or
-            ``training`` group.
+            ``training`` group, or if ``resume_path``'s checkpoint was
+            trained under a different ``model.architecture_version``.
     """
     logger = context.logger
     cfg = to_dataclass(context.cfg)
@@ -130,14 +170,23 @@ def run_training(context: RunContext) -> TrainingResult:
         tracker=tracker,
         run_dir=context.paths.run_dir,
         resolved_config=resolved,
+        architecture_version=model_cfg.architecture_version,
     )
 
+    start_epoch = 0
+    if resume_path is not None:
+        logger.info("resuming from %s", resume_path)
+        start_epoch = trainer.load_checkpoint(
+            resume_path, architecture_version=model_cfg.architecture_version
+        )
+        logger.info("resuming at epoch %d/%d", start_epoch + 1, training_cfg.epochs)
+
     try:
-        result = trainer.fit()
+        result = trainer.fit(start_epoch=start_epoch)
     finally:
         tracker.close()
 
-    _report(context, result)
+    _report(context, result, architecture_version=model_cfg.architecture_version)
     return result
 
 
@@ -163,12 +212,18 @@ def _warn_on_activation_mismatch(context: RunContext, output_activation: str, da
         )
 
 
-def _report(context: RunContext, result: TrainingResult) -> None:
+def _report(context: RunContext, result: TrainingResult, *, architecture_version: str) -> None:
     """Log the final summary and write it to the run directory.
 
     Args:
         context: The run context.
         result: The completed training result.
+        architecture_version: Tag identifying this model's architecture,
+            written alongside the numeric summary so a run's numbers can
+            always be traced back to the code that produced them. Kept
+            outside ``result.summary()`` itself, which every other caller of
+            :meth:`~tinyearth.training.trainer.TrainingResult.summary`
+            expects to be all-numeric.
     """
     logger = context.logger
     log_section(logger, "Results")
@@ -180,19 +235,26 @@ def _report(context: RunContext, result: TrainingResult) -> None:
     if result.best_epoch >= 0:
         logger.info("  %-22s %.6f (epoch %d)", "best", result.best_metric, result.best_epoch + 1)
 
-    summary = result.summary()
+    summary: dict[str, object] = {"architecture_version": architecture_version, **result.summary()}
     destination = context.paths.run_dir / "summary.json"
     destination.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     logger.info("wrote %s", destination)
 
 
 def main() -> None:
-    """Console-script entry point for ``tinyearth-train``."""
+    """Console-script entry point for ``tinyearth-train``.
+
+    The non-Hydra ``--resume <path>`` flag is stripped from :data:`sys.argv`
+    before handing over, since Hydra's parser only understands ``key=value``
+    overrides -- the same pattern ``cli/inspect_config.py`` uses for
+    ``--dry-run``.
+    """
+    sys.argv, resume_path = _extract_resume_path(sys.argv)
 
     def entrypoint(cfg: DictConfig) -> None:
         """Initialise the run and train."""
         context = initialise_run(cfg)
-        run_training(context)
+        run_training(context, resume_path=resume_path)
         context.logger.info("training complete")
 
     run_with_hydra(entrypoint)

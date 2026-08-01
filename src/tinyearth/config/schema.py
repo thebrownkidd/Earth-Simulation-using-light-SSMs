@@ -361,6 +361,20 @@ class ModelConfig:
         backbone: Temporal backbone settings.
         decoder: Decoder settings.
         loss: Training objective.
+        skip_connections: Wire the encoder's last-observed-context-frame
+            features into the decoder at every resolution level. Off by
+            default, so every existing (v1) config and checkpoint is
+            untouched; v2 experiment configs turn it on explicitly. Changes
+            the encoder/decoder parameter count, so the size tiers calibrated
+            with it on differ from :data:`tinyearth.models.sizes.SIZE_TIERS`
+            -- see :data:`tinyearth.models.sizes.SIZE_TIERS_SKIP`.
+        architecture_version: Free-text tag identifying this model's
+            architecture, recorded into the resolved config, every
+            checkpoint and ``summary.json``. Exists so that a run's numbers
+            can always be traced to the code that produced them, and so
+            ``--resume`` can refuse to load a checkpoint into structurally
+            different code (e.g. a v1 checkpoint has no skip-fusion
+            convolutions for v2 code to load weights into).
     """
 
     latent_dim: int = 128
@@ -368,6 +382,8 @@ class ModelConfig:
     backbone: BackboneConfig = field(default_factory=BackboneConfig)
     decoder: DecoderConfig = field(default_factory=DecoderConfig)
     loss: LossConfig = field(default_factory=LossConfig)
+    skip_connections: bool = False
+    architecture_version: str = "v1_baseline"
 
 
 @dataclass

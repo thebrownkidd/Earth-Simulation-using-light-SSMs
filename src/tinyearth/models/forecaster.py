@@ -158,9 +158,9 @@ class Forecaster(nn.Module):
         """
         check_latent_shape(images, "images")
         steps = self.horizon if horizon is None else horizon
-        latents: torch.Tensor = self.encoder(images)
+        latents, skips = self.encoder.forward_with_skips(images)
         forecast_latents: torch.Tensor = self.backbone(latents, steps)
-        forecast: torch.Tensor = self.decoder(forecast_latents)
+        forecast: torch.Tensor = self.decoder(forecast_latents, skips)
         return forecast
 
     def parameter_breakdown(self, trainable_only: bool = True) -> ParameterBreakdown:

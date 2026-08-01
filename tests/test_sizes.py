@@ -20,6 +20,7 @@ from tinyearth.models.sizes import (
     CALIBRATION_LATENT_DIM,
     CALIBRATION_LAYERS,
     SIZE_TIERS,
+    SIZE_TIERS_SKIP,
     TARGET_PARAMETERS,
     available_sizes,
     resolve_hidden_dim,
@@ -134,3 +135,92 @@ class TestResolveHiddenDim:
         """
         for size in available_sizes():
             assert resolve_hidden_dim("s4d", size) > 2 * resolve_hidden_dim("convlstm", size)
+
+    def test_skip_connections_flag_selects_the_skip_table(self):
+        assert (
+            resolve_hidden_dim("s4d", "tiny", skip_connections=True)
+            == SIZE_TIERS_SKIP["s4d"]["tiny"]
+        )
+
+    def test_skip_table_unknown_backbone_points_at_the_flagged_script(self):
+        with pytest.raises(KeyError, match=r"calibrate_sizes\.py --skip-connections"):
+            resolve_hidden_dim("mystery_net", "tiny", skip_connections=True)
+
+
+# The skip-connection encoder/decoder adds 43,232 parameters over the
+# standard pair (228,548 -> 271,780 at base_channels=32, depth=2). A tier
+# calibrated without skip connections would silently target the wrong budget
+# once applied to a skip-connection model, so it is calibrated separately.
+FIXED_SKIP_OVERHEAD = 43_232
+
+
+def build_total_skip(backbone: str, hidden_dim: int) -> int:
+    """Count total parameters for a backbone at a width, with skip connections."""
+    encoder = CNNEncoder(
+        4, CALIBRATION_LATENT_DIM, base_channels=32, depth=2, skip_connections=True
+    )
+    decoder = CNNDecoder(
+        4,
+        CALIBRATION_LATENT_DIM,
+        base_channels=32,
+        depth=2,
+        skip_channels=encoder.skip_channels,
+    )
+    module = TEMPORAL_BACKBONES.build(
+        backbone,
+        latent_dim=CALIBRATION_LATENT_DIM,
+        hidden_dim=hidden_dim,
+        n_layers=CALIBRATION_LAYERS,
+        **FIXED_KWARGS[backbone],
+    )
+    return count_parameters(encoder) + count_parameters(decoder) + count_parameters(module)
+
+
+class TestSkipTierTable:
+    def test_every_registered_backbone_is_calibrated(self):
+        assert set(SIZE_TIERS_SKIP) == set(TEMPORAL_BACKBONES.keys())
+
+    def test_every_backbone_covers_every_tier(self):
+        for backbone, tiers in SIZE_TIERS_SKIP.items():
+            assert set(tiers) == set(TARGET_PARAMETERS), backbone
+
+    def test_fixed_overhead_matches_the_measured_value(self):
+        """Pins the constant this whole table's existence rests on.
+
+        If the skip pathway's parameter cost ever changes, this table (and
+        the module-level note explaining why it happens to equal SIZE_TIERS
+        almost everywhere) needs recalibrating -- this test is what notices.
+        """
+        plain = count_parameters(
+            CNNEncoder(4, CALIBRATION_LATENT_DIM, base_channels=32, depth=2)
+        ) + count_parameters(CNNDecoder(4, CALIBRATION_LATENT_DIM, base_channels=32, depth=2))
+        encoder = CNNEncoder(
+            4, CALIBRATION_LATENT_DIM, base_channels=32, depth=2, skip_connections=True
+        )
+        with_skip = count_parameters(encoder) + count_parameters(
+            CNNDecoder(
+                4,
+                CALIBRATION_LATENT_DIM,
+                base_channels=32,
+                depth=2,
+                skip_channels=encoder.skip_channels,
+            )
+        )
+        assert with_skip - plain == FIXED_SKIP_OVERHEAD
+
+
+@pytest.mark.parametrize("backbone", sorted(SIZE_TIERS_SKIP))
+@pytest.mark.parametrize("size", available_sizes())
+class TestSkipCalibrationAccuracy:
+    def test_tier_lands_near_its_target(self, backbone, size):
+        target = TARGET_PARAMETERS[size]
+        total = build_total_skip(
+            backbone, resolve_hidden_dim(backbone, size, skip_connections=True)
+        )
+        relative = abs(total - target) / target
+
+        assert relative <= TOLERANCE, (
+            f"{backbone}/{size} (skip): {total:,} parameters is {100 * relative:.1f}% from "
+            f"the {target:,} target. Rerun "
+            "`python scripts/calibrate_sizes.py --skip-connections` and update SIZE_TIERS_SKIP."
+        )

@@ -145,6 +145,7 @@ def build_forecaster(cfg: ModelConfig, in_channels: int, horizon: int) -> Foreca
         depth=cfg.encoder.depth,
         norm=cfg.encoder.norm,
         activation=cfg.encoder.activation,
+        skip_connections=cfg.skip_connections,
     )
     decoder = DECODERS.build(
         cfg.decoder.name,
@@ -155,10 +156,16 @@ def build_forecaster(cfg: ModelConfig, in_channels: int, horizon: int) -> Foreca
         norm=cfg.decoder.norm,
         activation=cfg.decoder.activation,
         output_activation=cfg.decoder.output_activation,
+        # Wired from the already-built encoder rather than recomputed here, so
+        # the two can never disagree about channel counts even if a future
+        # encoder implementation computes skip_channels differently.
+        skip_channels=encoder.skip_channels if cfg.skip_connections else None,
     )
     backbone_kwargs = dict(cfg.backbone.kwargs)
     if cfg.backbone.size is not None:
-        width = resolve_hidden_dim(cfg.backbone.name, cfg.backbone.size)
+        width = resolve_hidden_dim(
+            cfg.backbone.name, cfg.backbone.size, skip_connections=cfg.skip_connections
+        )
         # `hidden_dim: null` means "let the tier decide". Every model config
         # ships a concrete default width, and without a way to stand that
         # default down, `size` could never take effect from a composed config --
@@ -199,10 +206,12 @@ def build_forecaster(cfg: ModelConfig, in_channels: int, horizon: int) -> Foreca
     model = Forecaster(encoder=encoder, backbone=backbone, decoder=decoder, horizon=horizon)
     breakdown = model.parameter_breakdown()
     logger.info(
-        "built %r forecaster: %s parameters (%.1f%% in the backbone)",
+        "built %r forecaster [%s]: %s parameters (%.1f%% in the backbone), skip_connections=%s",
         cfg.backbone.name,
+        cfg.architecture_version,
         f"{breakdown.total:,}",
         100 * breakdown.backbone_fraction,
+        cfg.skip_connections,
     )
     return model
 

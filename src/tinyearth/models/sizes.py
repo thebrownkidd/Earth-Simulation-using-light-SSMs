@@ -35,7 +35,13 @@ from __future__ import annotations
 
 from typing import Final
 
-__all__ = ["SIZE_TIERS", "TARGET_PARAMETERS", "available_sizes", "resolve_hidden_dim"]
+__all__ = [
+    "SIZE_TIERS",
+    "SIZE_TIERS_SKIP",
+    "TARGET_PARAMETERS",
+    "available_sizes",
+    "resolve_hidden_dim",
+]
 
 TARGET_PARAMETERS: Final[dict[str, int]] = {
     "tiny": 2_000_000,
@@ -58,6 +64,31 @@ Measured, not estimated. See the module docstring for the calibration setup and
 ``tests/test_sizes.py`` for the check that keeps them honest.
 """
 
+SIZE_TIERS_SKIP: Final[dict[str, dict[str, int]]] = {
+    "s4d": {"tiny": 264, "small": 456, "base": 664, "large": 960},
+    "mamba": {"tiny": 248, "small": 424, "base": 608, "large": 872},
+    "convlstm": {"tiny": 72, "small": 128, "base": 184, "large": 272},
+    "transformer": {"tiny": 120, "small": 200, "base": 296, "large": 416},
+}
+"""Calibrated ``hidden_dim`` for the encoder/decoder built with
+``skip_connections=True``, which adds 43,232 fixed parameters (228,548 ->
+271,780 at the standard ``base_channels=32, depth=2``) that :data:`SIZE_TIERS`
+was not calibrated against. Reusing :data:`SIZE_TIERS` for a skip-connection
+model would silently target the wrong parameter budget -- not by a lot (a few
+percent at the "tiny" tier, less at larger ones), but enough that a "matched
+2M" comparison would not, in fact, be matched: at :data:`SIZE_TIERS`'
+``convlstm/tiny`` width of 80, the skip-connection total overshoots 2M by
+13.2%, outside the tolerance ``tests/test_sizes.py`` enforces.
+
+Calibrated at ``--step 8`` rather than the default 16 -- the fixed overhead is
+a big enough share of the "tiny" budget that the default step's coarser grid
+missed a close-enough width for ``convlstm``.
+
+Recalibrate with::
+
+    python scripts/calibrate_sizes.py --skip-connections --step 8 --emit-python
+"""
+
 CALIBRATION_LAYERS: Final = 4
 """Depth the tiers were calibrated at; the tier widths assume it."""
 
@@ -70,12 +101,18 @@ def available_sizes() -> tuple[str, ...]:
     return tuple(TARGET_PARAMETERS)
 
 
-def resolve_hidden_dim(backbone: str, size: str) -> int:
+def resolve_hidden_dim(backbone: str, size: str, skip_connections: bool = False) -> int:
     """Look up the calibrated width for a backbone at a size tier.
 
     Args:
         backbone: Registry key, e.g. ``"s4d"``.
         size: Tier name from :func:`available_sizes`.
+        skip_connections: Look up :data:`SIZE_TIERS_SKIP` instead of
+            :data:`SIZE_TIERS`. Must match whether the model this width feeds
+            was (or will be) built with ``model.skip_connections=True`` -- the
+            two tables are calibrated against encoder/decoder pairs of
+            different fixed size, so using the wrong one targets the wrong
+            parameter budget.
 
     Returns:
         The calibrated ``hidden_dim``.
@@ -85,13 +122,17 @@ def resolve_hidden_dim(backbone: str, size: str) -> int:
             means adding a row here, and the message says so -- silently guessing
             a width would produce a scaling study whose points are not comparable.
     """
-    if backbone not in SIZE_TIERS:
-        known = ", ".join(sorted(SIZE_TIERS))
+    table = SIZE_TIERS_SKIP if skip_connections else SIZE_TIERS
+    table_name = "SIZE_TIERS_SKIP" if skip_connections else "SIZE_TIERS"
+    script_flag = " --skip-connections" if skip_connections else ""
+
+    if backbone not in table:
+        known = ", ".join(sorted(table))
         raise KeyError(
-            f"No size calibration for backbone {backbone!r}. Calibrated: {known}. "
-            "Run `python scripts/calibrate_sizes.py` and add a row to SIZE_TIERS."
+            f"No size calibration for backbone {backbone!r} in {table_name}. Calibrated: "
+            f"{known}. Run `python scripts/calibrate_sizes.py{script_flag}` and add a row."
         )
-    tiers = SIZE_TIERS[backbone]
+    tiers = table[backbone]
     if size not in tiers:
         known = ", ".join(tiers)
         raise KeyError(f"Unknown size {size!r} for {backbone!r}. Available: {known}.")

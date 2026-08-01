@@ -20,10 +20,12 @@ asset.
 
 from __future__ import annotations
 
+import random
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch import nn
 from torch.optim import Optimizer
@@ -127,6 +129,11 @@ class Trainer:
         tracker: Metric tracker.
         run_dir: Directory for checkpoints.
         resolved_config: Config recorded into checkpoints for reproducibility.
+        architecture_version: Tag identifying this model's architecture,
+            recorded into every checkpoint. :meth:`load_checkpoint` compares
+            it against a checkpoint's own tag when asked to, refusing to
+            resume across an architecture change rather than silently loading
+            weights into modules the checkpoint was never trained against.
     """
 
     def __init__(
@@ -142,6 +149,7 @@ class Trainer:
         tracker: MetricTracker | None = None,
         run_dir: Path | None = None,
         resolved_config: dict[str, object] | None = None,
+        architecture_version: str = "v1_baseline",
     ) -> None:
         self.model = model.to(device)
         self.loss = loss.to(device)
@@ -154,6 +162,7 @@ class Trainer:
         self.tracker = tracker or NullTracker()
         self.run_dir = run_dir
         self.resolved_config = resolved_config or {}
+        self.architecture_version = architecture_version
 
         self.global_step = 0
         # AMP is CUDA-only in this project; enabling it on CPU would silently
@@ -316,20 +325,102 @@ class Trainer:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         path = self.run_dir / f"{name}.ckpt"
         rng = capture_rng_state()
+        # The train loader's own shuffle generator is a separate RNG stream
+        # from the ones capture_rng_state() covers -- see loaders.py, where it
+        # is seeded explicitly rather than left to the global torch RNG so
+        # that shuffle order does not depend on how many random draws the
+        # model happened to make. Saving its state is what lets a resumed run
+        # continue the SAME shuffle sequence rather than restarting it.
+        generator = getattr(self.train_loader, "generator", None)
         torch.save(
             {
                 "epoch": epoch,
                 "global_step": self.global_step,
+                "architecture_version": self.architecture_version,
                 "model": self.model.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
                 "scheduler": self.scheduler.state_dict() if self.scheduler else None,
                 "metrics": metrics,
                 "config": self.resolved_config,
-                "rng": {"python": rng.python_state, "torch": rng.torch_state},
+                "rng": {
+                    "python": rng.python_state,
+                    "numpy": rng.numpy_state,
+                    "torch": rng.torch_state,
+                    "cuda": rng.cuda_states,
+                },
+                "loader_generator": generator.get_state() if generator is not None else None,
             },
             path,
         )
         return path
+
+    def load_checkpoint(self, path: Path, *, architecture_version: str | None = None) -> int:
+        """Restore training state from a checkpoint and return the epoch to resume from.
+
+        Restores model weights, optimizer state, scheduler state, the train
+        loader's shuffle generator (if any) and the global RNG state. Called
+        once, after everything else is built and seeded but before
+        :meth:`fit` -- the RNG state this restores overwrites whatever
+        :func:`~tinyearth.utils.seed.seed_everything` set, which is the point.
+
+        Args:
+            path: A checkpoint written by :meth:`save_checkpoint`.
+            architecture_version: Expected architecture-version tag. When
+                given and it disagrees with the checkpoint's own tag, the load
+                is refused rather than silently proceeding -- e.g. resuming a
+                v1 checkpoint into v2 code would try to load weights into
+                skip-fusion convolutions v1 never had, or leave v2's
+                skip-fusion weights at their random initialisation with no
+                indication anything was wrong.
+
+        Returns:
+            The epoch index to resume from: one past the epoch the checkpoint
+            recorded, since that epoch's training already happened.
+
+        Raises:
+            ValueError: If ``architecture_version`` is given and does not
+                match the checkpoint's recorded tag.
+        """
+        payload = torch.load(path, map_location=self.device, weights_only=False)
+
+        checkpoint_version = payload.get("architecture_version")
+        if architecture_version is not None and checkpoint_version != architecture_version:
+            raise ValueError(
+                f"Refusing to resume from {path}: it was trained as architecture_version="
+                f"{checkpoint_version!r}, but this run is {architecture_version!r}. Their "
+                "encoder/decoder/backbone parameters are not guaranteed compatible."
+            )
+
+        self.model.load_state_dict(payload["model"])
+        self.optimizer.load_state_dict(payload["optimizer"])
+        if self.scheduler is not None and payload.get("scheduler") is not None:
+            self.scheduler.load_state_dict(payload["scheduler"])
+        self.global_step = payload["global_step"]
+
+        rng = payload["rng"]
+        random.setstate(rng["python"])
+        if rng.get("numpy") is not None:
+            np.random.set_state(rng["numpy"])
+        else:  # pragma: no cover - only reachable loading a pre-numpy-capture checkpoint
+            logger.warning("checkpoint has no numpy RNG state (older format); not restored")
+        torch.set_rng_state(rng["torch"])
+        if rng.get("cuda") and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(list(rng["cuda"]))
+
+        generator_state = payload.get("loader_generator")
+        loader_generator = getattr(self.train_loader, "generator", None)
+        if generator_state is not None and loader_generator is not None:
+            loader_generator.set_state(generator_state)
+
+        resume_epoch = int(payload["epoch"]) + 1
+        logger.info(
+            "loaded checkpoint %s (architecture_version=%r, epoch %d, step %d)",
+            path,
+            checkpoint_version,
+            payload["epoch"],
+            self.global_step,
+        )
+        return resume_epoch
 
     def _is_improvement(self, value: float, best: float) -> bool:
         """Return whether ``value`` beats ``best`` under the configured mode."""
@@ -339,22 +430,37 @@ class Trainer:
 
     # -- orchestration ------------------------------------------------------
 
-    def fit(self) -> TrainingResult:
-        """Run the full training loop.
+    def fit(self, start_epoch: int = 0) -> TrainingResult:
+        """Run the training loop from ``start_epoch`` to :attr:`cfg`'s epoch count.
+
+        Args:
+            start_epoch: Zero-based epoch index to begin at. ``0`` for a fresh
+                run; the return value of :meth:`load_checkpoint` when
+                resuming, so that the epoch a checkpoint recorded is not
+                repeated.
 
         Returns:
-            The training result, including the efficiency profile.
+            The training result, including the efficiency profile. Covers
+            only epochs actually run in this call -- on resume, the caller
+            gets a result for the tail of training, not the whole history.
         """
         result = TrainingResult(parameters=self.model.parameter_breakdown().as_dict())
         monitor = self.cfg.checkpoint.monitor
         best = float("-inf") if self.cfg.checkpoint.mode == "max" else float("inf")
         epochs_without_improvement = 0
 
+        if start_epoch >= self.cfg.epochs:
+            logger.info(
+                "start_epoch=%d >= training.epochs=%d; nothing left to train",
+                start_epoch,
+                self.cfg.epochs,
+            )
+
         self.tracker.log_hyperparameters(
             {key: str(value) for key, value in self.resolved_config.items()}
         )
 
-        for epoch in range(self.cfg.epochs):
+        for epoch in range(start_epoch, self.cfg.epochs):
             started = time.perf_counter()
             train_metrics = self.train_epoch()
 
