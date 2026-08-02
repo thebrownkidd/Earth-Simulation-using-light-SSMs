@@ -550,6 +550,183 @@ def render_quality(record: dict[str, Any], mode: str, destination: Path) -> Path
     return destination
 
 
+def render_v1_vs_v2(v1: dict[str, Any], v2: dict[str, Any], mode: str, destination: Path) -> Path:
+    """Render the v1-vs-v2 (skip connections + GDL loss) comparison.
+
+    Two panels, MAE and SSIM, because the two headline findings point in
+    different directions: v2's MAE moves by a few percent in either direction
+    depending on the backbone, while its SSIM improves for every backbone by
+    a similar, larger margin. A single combined score would average that
+    contrast away.
+
+    Each version's own persistence baseline is drawn as a reference line in
+    its own colour -- the two versions are NOT scored on the same validation
+    cubes (v1: 161 windows on ~1,650 cubes; v2: 312 windows on ~3,150 cubes,
+    grown by an unrelated data-collection task run in the same window), so
+    the baseline itself moved between versions. Showing both baselines is
+    what makes that visible rather than hidden.
+
+    Args:
+        v1: The record written by ``scripts/evaluate_earthnet.py`` for v1.
+        v2: The same, for v2.
+        mode: ``"light"`` or ``"dark"``.
+        destination: Output PNG path.
+
+    Returns:
+        The path written.
+    """
+    import matplotlib
+    import numpy as np
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    ink = _style(mode)
+    colours = PALETTE[mode]
+    backbones = [name for name in ORDER if name in v1["results"] and name in v2["results"]]
+
+    fig, (left, right) = plt.subplots(1, 2, figsize=(11.5, 4.6), facecolor=ink["surface"])
+    positions = np.arange(len(backbones))
+    width = 0.32
+
+    for axis, metric, title, better in (
+        (left, "mae", "Mean absolute error", "lower is better"),
+        (right, "ssim", "Structural similarity (SSIM)", "higher is better"),
+    ):
+        axis.set_facecolor(ink["surface"])
+        v1_values = [v1["results"][name][metric] for name in backbones]
+        v2_values = [v2["results"][name][metric] for name in backbones]
+        v1_persist = v1["results"]["persistence"][metric]
+        v2_persist = v2["results"]["persistence"][metric]
+
+        # Bars start from the data's own floor, not zero. All four quantities
+        # per panel (two backbones' worth of bars, two persistence lines) sit
+        # within a narrow band by construction -- MAE in [0.025, 0.031], SSIM
+        # in [0.73, 0.81] -- and starting from 0 would compress every bar
+        # into a sliver at the top, hiding the differences this figure exists
+        # to show. Every value is still labelled directly on its bar, so
+        # nothing here is deceptive about the true magnitude.
+        floor = min([*v1_values, *v2_values, v1_persist, v2_persist])
+        ceiling = max([*v1_values, *v2_values, v1_persist, v2_persist])
+        span = ceiling - floor
+        axis.set_ylim(floor - 0.22 * span, ceiling + 0.30 * span)
+
+        axis.bar(
+            positions - width / 2,
+            v1_values,
+            width,
+            color=[colours[name] for name in backbones],
+            alpha=0.45,
+            label="v1 (baseline)",
+            edgecolor=ink["surface"],
+            zorder=3,
+        )
+        axis.bar(
+            positions + width / 2,
+            v2_values,
+            width,
+            color=[colours[name] for name in backbones],
+            alpha=1.0,
+            label="v2 (skip + GDL)",
+            edgecolor=ink["surface"],
+            zorder=3,
+        )
+
+        for position, value in zip(positions - width / 2, v1_values, strict=True):
+            axis.annotate(
+                f"{value:.3f}",
+                xy=(position, value),
+                xytext=(0, 3),
+                textcoords="offset points",
+                ha="center",
+                fontsize=7.5,
+                color=ink["secondary"],
+                zorder=4,
+            )
+        for position, value in zip(positions + width / 2, v2_values, strict=True):
+            axis.annotate(
+                f"{value:.3f}",
+                xy=(position, value),
+                xytext=(0, 3),
+                textcoords="offset points",
+                ha="center",
+                fontsize=7.5,
+                color=ink["primary"],
+                fontweight="bold",
+                zorder=4,
+            )
+
+        axis.axhline(v1_persist, color=ink["secondary"], linestyle=":", linewidth=1.3, zorder=1)
+        axis.axhline(v2_persist, color=ink["primary"], linestyle=":", linewidth=1.3, zorder=1)
+
+        # The two persistence lines land within 0.002-0.006 of each other --
+        # close enough that independent labels collide. One combined label,
+        # placed above whichever line is higher, reads cleanly either way.
+        upper_label, lower_label = (
+            (f"v2 persistence {v2_persist:.3f}", f"v1 persistence {v1_persist:.3f}")
+            if v2_persist >= v1_persist
+            else (f"v1 persistence {v1_persist:.3f}", f"v2 persistence {v2_persist:.3f}")
+        )
+        axis.annotate(
+            f"{upper_label}\n{lower_label}",
+            xy=(0.99, max(v1_persist, v2_persist)),
+            xycoords=("axes fraction", "data"),
+            xytext=(0, 5),
+            textcoords="offset points",
+            ha="right",
+            va="bottom",
+            fontsize=7.5,
+            color=ink["secondary"],
+            linespacing=1.4,
+        )
+
+        axis.set_xticks(positions)
+        axis.set_xticklabels([LABEL[name] for name in backbones], fontsize=9)
+        axis.set_title(f"{title} ({better})", color=ink["primary"], fontsize=11, loc="left", pad=10)
+        axis.tick_params(colors=ink["secondary"])
+        axis.grid(axis="y", color=ink["grid"], linewidth=0.7, zorder=0)
+        for spine in ("top", "right"):
+            axis.spines[spine].set_visible(False)
+        for spine in ("left", "bottom"):
+            axis.spines[spine].set_color(ink["grid"])
+
+    left.legend(
+        frameon=False,
+        fontsize=8.5,
+        labelcolor=ink["secondary"],
+        loc="lower center",
+        bbox_to_anchor=(0.5, -0.24),
+        ncol=2,
+    )
+
+    fig.suptitle(
+        "v1 vs v2: encoder-decoder skip connections + a gradient-difference loss term",
+        color=ink["primary"],
+        fontsize=12.5,
+        x=0.008,
+        ha="left",
+        y=0.985,
+    )
+    fig.text(
+        0.008,
+        0.008,
+        f"v1: {v1['setup']['windows']} windows on ~1,650 cubes. v2: {v2['setup']['windows']} windows "
+        "on ~3,150 cubes (dataset grew between runs -- see docs/v1-vs-v2.md). Faded = v1, solid = v2. "
+        "Dotted lines are each version's own free persistence baseline.",
+        color=ink["secondary"],
+        fontsize=7.5,
+        ha="left",
+        va="bottom",
+        linespacing=1.5,
+    )
+
+    fig.tight_layout(rect=(0, 0.14, 1, 0.93))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(destination, dpi=170, facecolor=ink["surface"])
+    plt.close(fig)
+    return destination
+
+
 def _display_name(name: str) -> str:
     """Return a human label for a model or reference."""
     return LABEL.get(name, name.capitalize())
@@ -600,6 +777,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     quality_source = source.with_name("earthnet.json")
+    quality = None
     if quality_source.is_file():
         quality = json.loads(quality_source.read_text(encoding="utf-8"))
         for mode in ("light", "dark"):
@@ -611,6 +789,21 @@ def main(argv: list[str] | None = None) -> int:
             "no EarthNet evaluation at %s; generate with " "`python scripts/evaluate_earthnet.py`",
             quality_source,
         )
+
+    v2_source = source.with_name("earthnet_v2.json")
+    if v2_source.is_file():
+        quality_v2 = json.loads(v2_source.read_text(encoding="utf-8"))
+        for mode in ("light", "dark"):
+            logger.info(
+                "wrote %s",
+                render_quality(quality_v2, mode, output_dir / f"quality-v2-{mode}.png"),
+            )
+        if quality is not None:
+            for mode in ("light", "dark"):
+                logger.info(
+                    "wrote %s",
+                    render_v1_vs_v2(quality, quality_v2, mode, output_dir / f"v1-vs-v2-{mode}.png"),
+                )
     return 0
 
 

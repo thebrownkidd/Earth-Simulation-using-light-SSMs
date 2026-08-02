@@ -1,0 +1,162 @@
+# @package _global_
+#
+# Objective
+#   The same question as configs/experiment/earthnet.yaml, asked of a second
+#   architecture: does adding encoder-to-decoder skip connections and a
+#   gradient-difference (GDL) loss term close the quality gap between the SSM
+#   and baseline backbones at a matched budget? Both changes are known-good
+#   ideas from the video-prediction literature for fighting the blur an
+#   L1-only, no-skip-pathway model produces -- this experiment measures
+#   whether they help *here*, not just cites that they can help in general.
+#
+#   This is a genuinely different architecture, not a fine-tune of v1. Its
+#   numbers go in experiments/results/earthnet_v2.json, alongside (never
+#   overwriting) v1's. configs/experiment/earthnet.yaml, its results file and
+#   its checkpoints are untouched by this file's existence.
+#
+# What changed from v1, and nothing else
+#   1. model.skip_connections: true -- the encoder's last-observed-context-
+#      frame features are fused into the decoder at every resolution level.
+#      See src/tinyearth/models/encoders/cnn.py and decoders/cnn.py. Adds
+#      43,232 parameters to the fixed encoder/decoder component (228,548 ->
+#      271,780), which is why the size tiers below resolve through
+#      SIZE_TIERS_SKIP rather than SIZE_TIERS -- see models/sizes.py.
+#   2. model.loss.terms adds gdl: 1.0 alongside l1: 1.0. GDL penalises
+#      differences in gradient MAGNITUDE, not raw pixel differences, so a
+#      prediction that gets the mean right but smooths over edges the target
+#      actually has -- L1's blind spot, and the visible failure mode in v1's
+#      filmstrip figures -- is now penalised. L1 remains the base term: see
+#      src/tinyearth/models/losses/reconstruction.py for why MSE/L2 was
+#      deliberately NOT used to fight blur (it is documented to make blur
+#      worse, not better).
+#   3. model.architecture_version: v2_skip_gdl, recorded into the resolved
+#      config, every checkpoint and summary.json, so a number can always be
+#      traced to the code that produced it. --resume refuses to load a
+#      checkpoint tagged with a different architecture_version.
+#
+#   Protocol, crop size, batch size, epoch budget, optimiser, schedule and the
+#   hash-based train/val split logic are all identical to v1 -- unchanged from
+#   configs/experiment/earthnet.yaml below this comment block. That is what
+#   makes "did the architecture change help" a single-variable question,
+#   holding the data and the compute budget fixed.
+#
+# Expected effect on the comparison (state up front, so it cannot be misread
+# later as a broken or inconsistent methodology)
+#   Both changes are expected to narrow, not eliminate, the quality gap
+#   between backbones on pixel-level and structural metrics. Sharpness now
+#   partly comes from the shared skip pathway and the shared GDL term, both
+#   of which are identical across all four backbones by construction -- so if
+#   v2's backbone-to-backbone gap on val/ssim shrinks relative to v1's, that
+#   is the expected, intended effect of adding shared machinery, not a sign
+#   the comparison broke. What should still differ by backbone is whatever
+#   the temporal backbone itself contributes beyond what skip+GDL already
+#   supply -- see docs/v1-vs-v2.md once both are measured.
+#
+# On Mamba
+#   Excluded from this experiment, carrying forward v1's decision rather than
+#   silently repeating it. v1 measured Mamba at ~5-6x S4D's per-step cost
+#   (11.3s vs 2.2s on the reference CPU), flat in batch size, because its
+#   selective scan is a sequential Python loop with no fused kernel -- see
+#   docs/project-log.md, Phase 5. v2 adds a GDL term (extra gradient
+#   computation every step) and skip-fusion convolutions (extra forward work
+#   in the decoder), both of which add cost to every backbone including
+#   Mamba, so its relative disadvantage does not improve here. Revisit this
+#   decision if Mamba ever gets a fused scan kernel on this platform, or if
+#   the compute budget for this comparison changes.
+#
+# Isolating the architecture change from the dataset change
+#   Run scripts/evaluate_earthnet.py against the SAME validation cubes v1 was
+#   scored on (i.e. do not point this at data downloaded after v1's run) so
+#   that a quality difference is attributable to the architecture alone.
+#   Growing the dataset is a separate, valid thing to do -- but doing it in
+#   the same comparison as this architecture change would make any quality
+#   difference ambiguous between two causes at once, which is exactly the
+#   failure mode this project's whole design exists to avoid.
+#
+# Usage
+#   tinyearth-train +experiment=earthnet_v2 model=s4d
+#   tinyearth-train +experiment=earthnet_v2 model=convlstm
+#   tinyearth-train +experiment=earthnet_v2 model=transformer
+#
+#   Or all three in sequence:
+#       python scripts/run_earthnet_study.py --experiment earthnet_v2 --backbones s4d convlstm transformer
+#
+#   Resuming an interrupted run:
+#       tinyearth-train +experiment=earthnet_v2 model=s4d --resume outputs/earthnet_v2/s4d/last.ckpt
+
+defaults:
+  - override /data: earthnet2021
+  - override /model: s4d
+  - override /training: default
+
+run:
+  name: ${model.backbone.name}
+  group: earthnet_v2
+  notes: "EarthNet2021, official 10->20 protocol, 32px crops, matched ~2M parameters, skip connections + GDL loss."
+  tags: [earthnet, real-data, matched-parameters, skip-connections, gdl, v2]
+
+seed:
+  value: 42
+  deterministic: true
+
+data:
+  # Identical to v1: history + horizon == 30 == the frames in a training
+  # cube, so each cube yields exactly one window and `stride` cannot bind.
+  history_length: 10
+  horizon: 20
+  crop_size: 32
+
+  cloud_masking: true
+  mask_policy: zero
+  min_valid_fraction: 0.1
+
+  # Same salt as v1 -- the hash-based split is stable under this salt, so the
+  # SAME cubes land in train/val here as they did for v1, given the same
+  # dataset root. That is what "isolating the architecture change" above
+  # depends on; do not change split_salt in this file.
+  val_fraction: 0.1
+  loader:
+    batch_size: 8
+    num_workers: 4
+    persistent_workers: true
+    prefetch_factor: 2
+
+model:
+  architecture_version: v2_skip_gdl
+  skip_connections: true
+
+  # See models/sizes.py: skip_connections adds 43,232 parameters to the fixed
+  # encoder/decoder, so the tier resolves through SIZE_TIERS_SKIP rather than
+  # SIZE_TIERS once model.skip_connections is true above -- both lines below
+  # remain load-bearing for the same reason they were in v1.
+  backbone:
+    size: tiny
+    kwargs:
+      hidden_dim: null
+      n_layers: 4
+
+  loss:
+    terms:
+      l1: 1.0
+      gdl: 1.0
+    kwargs: {}
+
+training:
+  # Same budget as v1, for the same reason: a controlled comparison needs the
+  # same epochs over the same data across every backbone. See
+  # docs/project-log.md Phase 5 for the per-backbone throughput measurements
+  # this was set from; v2's extra GDL/skip-fusion cost is assumed to scale
+  # roughly proportionally across backbones rather than remeasured per-model
+  # here, since none of it is backbone-specific work.
+  epochs: 6
+  optimizer:
+    lr: 1.0e-3
+    weight_decay: 1.0e-4
+  scheduler:
+    name: cosine
+    warmup_epochs: 1
+  evaluation:
+    efficiency: true
+    data_range: 1.0
+  grad_clip: 1.0
+  log_every_n_steps: 25

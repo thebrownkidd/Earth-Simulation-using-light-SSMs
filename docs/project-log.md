@@ -187,11 +187,19 @@ taste.
 | Crop rather than downsample | Preserves native 20 m texture, and a random crop differs every epoch, so it augments. Each 128×128 scene yields ~9,400 distinct 32×32 crops, which is why 1,200 cubes is not as few as it sounds. |
 | Keep the official 10→20 protocol exactly | The temporal axis is the object of study. Halving the horizon would have made the run ~2× faster and the result far less comparable. |
 | Train on crops, evaluate on whole scenes | No parameter depends on height or width, so this is free. It also makes the reported numbers answer a *harder* question than training optimised. |
-| Run the four models concurrently | Measured: four threads reach ~95% of sixteen-thread throughput (s4d 3.96 vs 4.09 samples/s). The other twelve threads were contention, not work. Four processes at four threads each is close to 4× the useful work. |
+| ~~Run the four models concurrently~~ **Reversed — see below** | A thread sweep showing four threads at ~95% of sixteen-thread throughput (s4d 3.96 vs 4.09 samples/s) looked like an invitation to run four processes at four threads each. Measured, not inferred: this was wrong. See "Bugs and surprises" below. |
 | Added persistence and climatology | A learned MAE is uninterpretable alone. Earth surface imagery is mostly static over 100 days, so a model that learned only to echo its input would still post a good number. |
 
 **Bugs and surprises**
 
+- **Concurrent training was 4.5× slower, not ~4× faster.** The thread sweep above measured one
+  process against an idle machine, which says nothing about four processes competing for
+  memory bandwidth — and these convolutional workloads are bandwidth-bound on a mobile CPU, not
+  thread-bound. Measured directly: a ConvLSTM epoch under four concurrent jobs took 1188 s
+  against a 265 s solo estimate, **4.5× slower each**, so the aggregate throughput was *below*
+  running one model at a time. `scripts/run_earthnet_study.py --jobs` now defaults to `1`; the
+  four-times-faster intuition from the thread sweep was simply wrong, and is kept in this log
+  as a lesson rather than quietly edited into a decision that always looked obvious.
 - **Mamba is ~6× slower than S4D in training**, and its throughput is *flat* in
   batch size — 0.64, 0.65, 0.71 samples/s at batch 2, 4, 8. There is no batching
   trick that recovers it; the sequential Python scan dominates. It alone set the
@@ -263,6 +271,125 @@ taste.
 
 ---
 
+## Phase 6 — Skip connections, a blur penalty, and resumable training
+
+**Delivered:** encoder-to-decoder skip connections (a second, opt-in
+architecture, `v2_skip_gdl`, run alongside v1 rather than replacing it), a
+gradient-difference loss term, `--resume` for the training loop, and a
+recalibrated size-tier table for the larger encoder/decoder skip connections
+produce.
+
+**Why a second architecture rather than editing the first.** Phase 5's
+filmstrip figure showed the v1 models holding an almost static forecast for
+100 days — a known failure mode of an L1-only decoder with no path back to
+full-resolution input detail. Two standard fixes exist: give the decoder a
+skip pathway to the input, and penalise blur directly rather than relying on
+L1 to discourage it as a side effect. Both are applied here, and the existing
+v1 results, config and checkpoints are left untouched precisely so the
+comparison between "before" and "after" stays available rather than being
+overwritten by "after."
+
+**Decisions**
+
+| Decision | Reasoning |
+| --- | --- |
+| Skip pathway carries the LAST context frame only, broadcast across all K forecast steps | A plain U-Net skip assumes matched input/output frame counts; this project's decoder emits `horizon=20` frames from `history=10`, so there is no frame-15-of-input to match to frame-15-of-output. The last observed frame is the only "what did this look like most recently" signal that is well-defined regardless of K. |
+| Implemented inside `Encoder`/`Decoder`, not any backbone | The controlled comparison requires the fixed components to stay identical across backbones. A per-backbone skip implementation could not be verified identical, and would reopen exactly the failure mode the matched-parameter bug (Phase 5) was fixed to prevent. |
+| Selecting the last frame is indexing, not a learned op | `CNNEncoder(skip_connections=True)` adds zero parameters over the plain encoder — confirmed by `test_no_parameters_are_added_by_enabling_skip_connections`. All of the skip pathway's new parameters live in the decoder's fusion convolutions, where the actual mixing happens. |
+| GDL added as a term, L1 kept as the base | Task instruction, and independently correct: MSE/L2 is documented to increase blur relative to L1, not reduce it. GDL compares gradient *magnitude* between prediction and target rather than raw pixel differences, so it penalises exactly the failure mode L1 cannot see — a prediction that gets the mean right but has no edges. |
+| GDL masked the same way as every other loss | A gradient spans two neighbouring pixels; it is valid only where both are, i.e. the product of the two shifted masks. Getting this wrong would optimise the model against gradients computed across cloud boundaries, which are not real edges in the data. |
+| A second, separately-calibrated size-tier table (`SIZE_TIERS_SKIP`) | Skip connections add 43,232 parameters to the fixed encoder/decoder component (228,548 → 271,780 at the standard `base_channels=32, depth=2`). Reusing `SIZE_TIERS` for a skip-connection model would silently target the wrong parameter budget — not by a huge amount, but `convlstm/tiny` at v1's width of 80 overshoots 2M by 13.2% once the skip overhead is added, outside the tolerance the tests enforce. |
+| `architecture_version` recorded in the config, every checkpoint, and `summary.json` | So a run's numbers can always be traced to the code that produced them, and so `--resume` has something concrete to check before loading weights into a possibly-incompatible model. |
+| `--resume` refuses a checkpoint whose `architecture_version` disagrees, when a caller states which version it expects | A v1 checkpoint has no skip-fusion convolutions for v2 code to load weights into; loading it anyway would either crash on a shape mismatch (best case) or silently succeed with the fusion convs at random initialisation (worst case, and what actually motivated making the check opt-in-strict rather than best-effort). |
+| Mamba excluded from v2, explicitly, as a carried-forward decision | Same constraint as v1: Mamba's per-step cost is ~5x S4D's and flat in batch size, because its selective scan has no fused kernel on this platform. v2 adds GDL's extra gradient computation and the skip pathway's extra decoder convolutions on top of every backbone's existing cost, which does not improve Mamba's relative position. Stated here so a future reader does not have to guess whether this was reconsidered and rejected, or simply never revisited. |
+
+**The resume mechanism, and what it does and does not guarantee.** Model
+weights, optimiser state, scheduler state, the training loader's own shuffle
+generator (a separate RNG stream from the ones `capture_rng_state()` covers —
+see `loaders.py`, seeded explicitly so shuffle order does not depend on how
+many random draws the model happens to make) and the global RNG state all
+round-trip through the checkpoint. Verified end to end: `tests/test_training.py`
+trains 2+2 epochs with a checkpoint in between and asserts the final weights
+and validation metrics match an uninterrupted 4-epoch run within floating-point
+tolerance — not by asserting on each piece individually, but by showing that
+if any piece failed to round-trip, the two runs would visibly diverge and the
+test would catch it regardless of which piece was at fault.
+
+That test deliberately uses `shuffle=False` loaders, matching the existing
+fixture convention in the same file. The loader-generator state is still
+captured and restored by `save_checkpoint`/`load_checkpoint` for the general
+case (real EarthNet2021 configs use `shuffle=True`), but verifying that path
+bit-exactly would require reasoning about a second, independently-advancing
+RNG stream inside the round-trip test, which the existing test suite's own
+convention already avoids for exactly this reason.
+
+**Went wrong**
+
+- The first version of `CNNDecoder`'s skip-fusion construction crashed
+  immediately whenever `skip_channels` was empty (the default, i.e. every
+  v1 decoder): `zip(level_channels, reversed([]), strict=True)` raises when
+  the two sequences have different lengths, and an empty `skip_channels`
+  against a non-empty `level_channels` is exactly that. Every existing test
+  in the repository builds a `CNNDecoder` without skip connections, so this
+  would have failed the entire suite instantly — caught before it did,
+  by building a decoder with no skip connections as the very first sanity
+  check after writing the encoder/decoder changes, before writing a single
+  test.
+- The initial `--step 16` calibration search (matching v1's grid) landed
+  `convlstm/tiny` at 13.2% from its 2M target once skip connections' fixed
+  overhead was added — outside the 12% tolerance `tests/test_sizes.py`
+  enforces. The overhead is a bigger proportional bite out of the smallest
+  tier than the larger ones, and the default grid was too coarse to find a
+  closer width nearby. Recalibrated at `--step 8`, which found `hidden_dim=72`
+  (−4.0% from target) for the same backbone and tier.
+- A first draft of the GDL blur-monotonicity test used a checkerboard target.
+  Blurring a checkerboard is *not* monotonic at every step: its energy is
+  concentrated at the Nyquist frequency, and a discrete Gaussian kernel's
+  response there aliases rather than smoothly attenuates, so the loss dipped
+  slightly non-monotonically between two blur levels on a small grid. Fixed
+  by testing against a single step edge instead, whose blur response is
+  well-behaved (monotonic, no periodicity to alias against) — this is a
+  property of the *test's* synthetic signal, not of GDL itself.
+- **The dataset grew between v1's run and v2's**, from ~1,650 to 3,150 cubes,
+  because a separate data-collection task ran in the same window as this one.
+  `earthnet_v2.yaml`'s own comments said to avoid exactly this ("run against
+  the SAME validation cubes v1 was scored on") and to say so plainly if it
+  happened anyway. It happened anyway — training was already committed to the
+  larger dataset by the time this was noticed. Every v1-vs-v2 delta in
+  `docs/v1-vs-v2.md` therefore mixes an architecture change with a
+  dataset-size change; the document is explicit about this rather than
+  presenting the comparison as clean. A repeat run against the frozen
+  1,650-cube set is the honest next step, not yet done.
+- **v2 ConvLSTM's training appeared to take 8h58m**; the real number is under
+  40 minutes. Six epochs logged normally at ~533s each, then a 7h22m gap
+  opened between the last epoch finishing and the run actually completing
+  (during efficiency profiling, which normally takes seconds). This is the
+  same false alarm Phase 4 already logged once — the machine suspending while
+  idle, not a regression — confirmed here the same way: by reading the
+  per-epoch timestamps rather than trusting the wall-clock total. Recorded a
+  second time because the instinct to treat a large duration as a bug rather
+  than checking the timestamps first is exactly the mistake Phase 4's note
+  exists to prevent, and it nearly repeated.
+
+**What "v2" means, now that both runs are measured**
+
+Full results, per-backbone deltas, and a reading against the stated
+pre-training hypothesis are in `docs/v1-vs-v2.md`. Briefly: the hypothesis
+that shared skip+GDL machinery would **narrow** the backbone-to-backbone
+spread was **wrong** — it widened (0.0225 → 0.0284 SSIM between best and
+worst backbone) — and that is reported as a miss, not revised after the fact.
+What did hold up: SSIM improved for all three backbones (+5.3% to +7.0%),
+consistent with GDL targeting blur specifically rather than accuracy
+generally, and Transformer under v2 is the first model in either version to
+beat the persistence baseline on SSIM. Both readings carry the dataset-size
+caveat above.
+
+GDL's weight (`lambda=1.0`) was not swept. The config comment says it is a
+config value precisely so it can be swept later without a code change; that
+sweep has not been run.
+
+---
+
 ## Cross-cutting lessons
 
 **Subprocess tests earn their cost.** Three bugs — the `--dry-run` leak, the
@@ -302,6 +429,7 @@ architecture look better or worse for reasons unrelated to the claim being made.
 | 3 — Baselines and training | Complete and verified |
 | 4 — SSMs and experiments | Complete and verified |
 | 5 — Real data | Complete; quality numbers are budget-limited, see below |
+| 6 — Skip connections, GDL, resume | Complete; v2 trained and measured, but against a larger dataset than v1 — see `docs/v1-vs-v2.md` |
 
 The EarthNet2021 format constants are now validated against a real download
 rather than against documentation: 30 frames, `(128, 128, 7, 30)` float16,
@@ -315,7 +443,10 @@ small fixed budget rather than four architectures at their best.
 
 Also outstanding: the frozen foundation-encoder comparison, GPU verification of
 mixed precision and peak-memory measurement, the official test tracks (their
-context and target files need joining), and residual forecasting — predicting
-the *change* from the last observed frame rather than the absolute image, which
+context and target files need joining), residual forecasting — predicting the
+*change* from the last observed frame rather than the absolute image, which
 would start every model at the persistence baseline instead of asking it to
-rediscover the scene.
+rediscover the scene — a v2 rerun against the exact 1,650-cube set v1 used
+(the current v2 numbers are on 3,150 cubes, so every v1-vs-v2 delta in
+`docs/v1-vs-v2.md` mixes an architecture change with a dataset-size change),
+and a sweep over GDL's loss weight.

@@ -100,6 +100,49 @@ restore_rng_state(state)
 `temporary_seed` is how evaluation is made independent of the training RNG stream:
 without it, evaluating at a different frequency changes the training trajectory.
 
+## Resuming training
+
+```bash
+tinyearth-train +experiment=earthnet model=s4d --resume outputs/earthnet/s4d/last.ckpt
+```
+
+`--resume` is a non-Hydra flag, stripped from argument parsing before Hydra sees it — the
+same pattern `--dry-run` uses in `cli/inspect_config.py`, since Hydra's override grammar has
+no notion of a bare flag taking a value.
+
+`Trainer.load_checkpoint` restores everything a checkpoint carries: model weights, optimiser
+state, scheduler state, the training loader's own shuffle generator (a separate RNG stream
+from the one `capture_rng_state()` covers — see "DataLoader determinism" above; it is seeded
+explicitly precisely so shuffle order does not depend on how many random draws the model
+happens to make), and the global RNG state. Training then continues from **one epoch past**
+the checkpoint's recorded epoch, not from epoch 0.
+
+Verified as a round trip, not piece by piece: `tests/test_training.py::TestResume` trains 2
+epochs, checkpoints, builds a fresh `Trainer`, resumes, trains 2 more, and asserts the final
+weights and validation metrics match an uninterrupted 4-epoch run within floating-point
+tolerance. If any single piece — optimiser momentum, the epoch index, either RNG stream —
+failed to round-trip, the two runs would visibly diverge and this test would catch it
+regardless of which piece was at fault.
+
+### Architecture-version guard
+
+Every checkpoint records `model.architecture_version` (e.g. `v1_baseline`, `v2_skip_gdl` —
+see `docs/models.md`). Passing an expected version to `load_checkpoint` makes it refuse to
+load a checkpoint tagged with a different one:
+
+```python
+trainer.load_checkpoint(path, architecture_version=model_cfg.architecture_version)
+# ValueError: Refusing to resume from ...: it was trained as architecture_version='v1_baseline',
+# but this run is 'v2_skip_gdl'. ...
+```
+
+Without this, resuming a v1 checkpoint into v2 code would try to load weights into
+skip-fusion convolutions v1 never had — a shape mismatch in the best case, or v2's
+skip-fusion weights silently sitting at their random initialisation in the worst case, with
+no indication anything was wrong. `tinyearth-train` always passes the current run's
+`model.architecture_version`, so this check is on by default whenever `--resume` is used
+through the CLI.
+
 ## The run record
 
 Each run writes to `outputs/<group>/<name>/`:

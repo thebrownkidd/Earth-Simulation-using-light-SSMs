@@ -171,10 +171,37 @@ model:
 | `l1` | Mean absolute error. **The default.** |
 | `l2` | Mean squared error. |
 | `charbonnier` | `sqrt((x-y)² + ε²)`; L1-like but smooth at zero. |
+| `gdl` | Gradient-difference loss — compares gradient **magnitude**, not raw pixel values. Added *alongside* `l1` in v2, not in place of it. |
 
 L1 is the default because on satellite imagery L2 over-penalises the rare large errors
 that cloud edges and shadows produce, and the usual result is a model hedging toward the
-local mean — visually, a blurred forecast.
+local mean — visually, a blurred forecast. **Do not reach for L2/MSE to fight blur** — it
+is documented to make blur worse, not better; use `gdl` alongside `l1` instead.
+
+### GDL: a blur penalty, not a replacement for L1
+
+L1 rewards a model for getting the mean pixel value right and is blind to whether the
+*edges* in a forecast match the edges in the target — a prediction that reproduces the
+scene's overall brightness but smooths away every field boundary can still post a good L1
+number. GDL closes that blind spot directly: it computes the horizontal and vertical
+pixel-to-pixel difference of both prediction and target, takes the **magnitude** of each,
+and penalises the difference between those magnitudes —
+
+```
+GDL = mean(| |∇ₓ pred| − |∇ₓ target| |) + mean(| |∇_y pred| − |∇_y target| |)
+```
+
+— rather than the difference of the gradients themselves, which is what distinguishes it
+from simply running L1 on a gradient image. A model that blurs edges the target actually
+has now pays for it here even when L1 alone would not notice.
+
+Masked exactly like every other loss, with one subtlety: a gradient spans **two**
+neighbouring pixels, so it counts as valid only where both are — the product of the two
+shifted masks, not the mask at a single pixel. Getting this wrong would teach the model to
+reproduce artefacts at cloud boundaries, which are not real edges in the data.
+
+Reference: Mathieu, Couprie & LeCun, *Deep Multi-Scale Video Prediction Beyond Mean Square
+Error*, ICLR 2016.
 
 **All losses are mask-aware.** `masked_mean` divides by the *valid* pixel count, not the
 total; dividing by the total would silently scale the loss down in proportion to cloudiness
@@ -197,6 +224,68 @@ The mismatch is a silent trap — the loss plateaus for a reason that looks like
 optimisation failure — so `tinyearth-train` warns when it detects the combination.
 
 ---
+
+## Skip connections and architecture versions (v2)
+
+Every backbone above trains under two architecture versions, selected independently of which
+backbone is chosen: **v1** (this document's baseline) and **v2**
+(`model.skip_connections: true`, plus the `gdl` loss term above). `model.architecture_version`
+tags which is which — recorded in the resolved config, every checkpoint and `summary.json`, so
+a run's numbers can always be traced back to the code that produced them, and so `--resume`
+can refuse to load a checkpoint into structurally incompatible code (see
+`docs/reproducibility.md`).
+
+### The problem a plain U-Net skip connection can't solve here
+
+A standard encoder-decoder skip connects encoder stage `i`'s output at input frame `t` to
+decoder stage `i`'s input at output frame `t` — it assumes matched frame counts. This project's
+decoder emits `horizon=20` frames from `history=10`: there is no frame 15 of the input to
+match to frame 15 of the output. The fix is to carry a signal that does not depend on frame
+alignment at all — **the last observed context frame**, which is well-defined regardless of
+`K`.
+
+### What actually happens
+
+`CNNEncoder(skip_connections=True)` exposes, via `forward_with_skips()`, the feature map at
+every downsampling stage — but only for the **last** frame in the input sequence, selected by
+plain indexing after each stage runs. That selection adds **zero parameters**: the encoder
+still holds no temporal-mixing weights, exactly as the controlled comparison requires.
+
+`CNNDecoder(skip_channels=...)` fuses each of those features into the matching resolution
+level of its upsampling path. Because the decoder produces `K` steps but the skip only has one
+frame's worth of features, the same skip feature is **broadcast across all `K` steps** before
+a 1×1 convolution concatenates and projects it back down to the decoder's own channel count —
+the skip pathway informs every forecast step identically, since it carries no information about
+*which* step is being decoded, only what the scene looked like most recently.
+
+```python
+# tinyearth.models.decoders.cnn.CNNDecoder._fuse (simplified)
+broadcast = skip.unsqueeze(1).expand(batch, steps, *skip.shape[1:]).reshape(batch * steps, ...)
+fused = fusion_conv(torch.cat([decoder_features, broadcast], dim=1))
+```
+
+Implemented inside the shared `Encoder`/`Decoder` base classes, not any individual backbone —
+the controlled comparison requires the fixed components to stay identical across backbones,
+and a per-backbone skip implementation could not be verified identical.
+
+### The parameter cost, and why it needs its own size-tier table
+
+Skip connections add **43,232 parameters** to the fixed encoder/decoder pair — 228,548 (v1) →
+271,780 (v2), at the standard `base_channels=32, depth=2`. That is enough to matter at the
+"tiny" (~2M) tier: reusing v1's `SIZE_TIERS` widths for a v2 model would overshoot the 2M
+target by over 10% for some backbones once the extra fixed parameters are counted. `models.sizes`
+therefore ships a second, separately-calibrated table, `SIZE_TIERS_SKIP`, and
+`model.skip_connections` selects which table `resolve_hidden_dim` reads from. Recalibrate
+either with `scripts/calibrate_sizes.py`, passing `--skip-connections` for the v2 table.
+
+### The expected effect, stated before it was measured
+
+Because the skip pathway and the GDL term are identical across every backbone by construction,
+both were expected to **narrow, not eliminate**, the backbone-to-backbone quality gap seen in
+v1 — sharpness would now partly come from shared machinery rather than solely from whichever
+backbone routed detail to the decoder best. Measuring it found the opposite: the gap widened.
+See the "Version 2" findings in the top-level README and `docs/v1-vs-v2.md` for the full result,
+reported as a miss against the stated hypothesis rather than revised after the fact.
 
 ## Adding a backbone (Phase 4)
 

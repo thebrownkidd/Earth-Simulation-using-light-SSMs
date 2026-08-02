@@ -333,6 +333,90 @@ def test_model_command_reports_size_and_cost(tmp_path: Path):
     assert "latency (ms)" in output
 
 
+def test_resume_continues_training_past_the_checkpointed_epoch(tmp_path: Path):
+    """The end-to-end path a user actually types, not just the in-process API.
+
+    ``--resume`` is a non-Hydra flag (Hydra's override grammar has no notion
+    of a bare flag taking a value), so it must be stripped from argv before
+    Hydra parses the rest -- exercised here through the real console-script
+    argument parsing, the way ``--dry-run``'s equivalent tests are.
+    """
+    outputs = tmp_path.as_posix()
+    cache = (tmp_path / "cache").as_posix()
+
+    first = _run(
+        "tinyearth.cli.train",
+        "+experiment=baseline_smoke",
+        "logging.rich=false",
+        "logging.tensorboard.enabled=false",
+        "training.epochs=2",
+        f"paths.outputs={outputs}",
+        f"paths.cache={cache}",
+    )
+    assert first.returncode == 0, first.stderr
+    checkpoint = tmp_path / "smoke" / "phase3" / "last.ckpt"
+    assert checkpoint.is_file()
+
+    second = _run(
+        "tinyearth.cli.train",
+        "+experiment=baseline_smoke",
+        "logging.rich=false",
+        "logging.tensorboard.enabled=false",
+        "training.epochs=4",
+        f"paths.outputs={outputs}",
+        f"paths.cache={cache}",
+        "--resume",
+        checkpoint.as_posix(),
+    )
+    output = second.stdout + second.stderr
+    assert second.returncode == 0, second.stderr
+    assert "resuming at epoch 3/4" in output
+
+    summary = json.loads((tmp_path / "smoke" / "phase3" / "summary.json").read_text())
+    assert summary["architecture_version"] == "v1_baseline"
+
+
+def test_resume_without_a_path_fails_loudly():
+    result = _run("tinyearth.cli.train", "--resume")
+    assert result.returncode != 0
+    assert "requires a checkpoint path" in result.stdout + result.stderr
+
+
+def test_resume_refuses_a_mismatched_architecture_version(tmp_path: Path):
+    """Resuming a v1 checkpoint into v2 code must fail loudly, not warp weights."""
+    outputs = tmp_path.as_posix()
+    cache = (tmp_path / "cache").as_posix()
+
+    first = _run(
+        "tinyearth.cli.train",
+        "+experiment=baseline_smoke",
+        "logging.rich=false",
+        "logging.tensorboard.enabled=false",
+        "training.epochs=1",
+        "model.architecture_version=v1_baseline",
+        f"paths.outputs={outputs}",
+        f"paths.cache={cache}",
+    )
+    assert first.returncode == 0, first.stderr
+    checkpoint = tmp_path / "smoke" / "phase3" / "last.ckpt"
+
+    second = _run(
+        "tinyearth.cli.train",
+        "+experiment=baseline_smoke",
+        "logging.rich=false",
+        "logging.tensorboard.enabled=false",
+        "training.epochs=2",
+        "model.architecture_version=v2_skip_gdl",
+        f"paths.outputs={(tmp_path / 'v2').as_posix()}",
+        f"paths.cache={cache}",
+        "--resume",
+        checkpoint.as_posix(),
+    )
+    output = second.stdout + second.stderr
+    assert second.returncode != 0
+    assert "Refusing to resume" in output
+
+
 def test_invalid_override_fails_loudly():
     result = _run("tinyearth.cli.inspect_config", "--dry-run", "seed.value=not-an-int")
     assert result.returncode != 0
